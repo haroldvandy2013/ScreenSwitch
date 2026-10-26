@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let driver = DisplayDriver()
+    private let driver: DisplayBackend
     private lazy var controller = DisplayController(driver: driver)
     private var statusItem: NSStatusItem!
     private var toggleItem: NSMenuItem!
@@ -13,37 +13,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controlWindow: NSWindow?
     private var windowStatus: NSTextField?
     private var windowToggle: NSButton?
+    private var languagePopup: NSPopUpButton?
+    private var localizedWindowText: [() -> Void] = []
+
+    init(driver: DisplayBackend = DisplayDriver()) {
+        self.driver = driver
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         installApplicationMenu()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "laptopcomputer", accessibilityDescription: "内置屏幕开关")
-        let menu = NSMenu()
-        menu.addItem(withTitle: "ScreenSwitch · 内置屏幕开关", action: nil, keyEquivalent: "")
-        descriptionItem = menu.addItem(withTitle: "正在读取显示器…", action: nil, keyEquivalent: "")
-        menu.addItem(.separator())
-        let show = menu.addItem(withTitle: "显示控制窗口", action: #selector(showControlWindow), keyEquivalent: "")
-        show.target = self
-        toggleItem = menu.addItem(withTitle: "关闭内置屏幕", action: #selector(toggle), keyEquivalent: "")
-        toggleItem.target = self
-        let restore = menu.addItem(withTitle: "恢复内置屏幕", action: #selector(restore), keyEquivalent: "r")
-        restore.keyEquivalentModifierMask = [.command, .option]
-        restore.target = self
-        menu.addItem(.separator())
-        let help = menu.addItem(withTitle: "使用与安全说明…", action: #selector(showHelp), keyEquivalent: "")
-        help.target = self
-        let diagnostic = menu.addItem(withTitle: "复制只读诊断", action: #selector(copyDiagnostic), keyEquivalent: "")
-        diagnostic.target = self
-        let quit = menu.addItem(withTitle: "恢复屏幕并退出", action: #selector(quit), keyEquivalent: "q")
-        quit.target = self
-        menu.autoenablesItems = false
-        statusItem.menu = menu
+        installStatusMenu()
         controller.onChange = { [weak self] in self?.updateMenu() }
-        controller.onError = { [weak self] text in self?.showError(text) }
+        controller.onError = { [weak self] error in self?.showError(error) }
         controller.onRestored = { [weak self] in self?.finishQuitIfNeeded() }
         controller.start()
         showControlWindow()
+    }
+
+    private func languageMenu() -> NSMenuItem {
+        let item = NSMenuItem(title: "语言 / Language", action: nil, keyEquivalent: "")
+        let menu = NSMenu()
+        for (index, language) in AppLanguage.allCases.enumerated() {
+            let option = menu.addItem(
+                withTitle: language == .chinese ? "简体中文" : "English",
+                action: #selector(selectMenuLanguage(_:)), keyEquivalent: ""
+            )
+            option.target = self
+            option.tag = index
+            option.state = LanguageSettings.shared.language == language ? .on : .off
+        }
+        item.submenu = menu
+        return item
+    }
+
+    private func installStatusMenu() {
+        let menu = NSMenu()
+        menu.addItem(withTitle: L("ScreenSwitch · 内置屏幕开关", "ScreenSwitch · Built-in display"), action: nil, keyEquivalent: "")
+        descriptionItem = menu.addItem(withTitle: controller.message, action: nil, keyEquivalent: "")
+        menu.addItem(.separator())
+        let show = menu.addItem(withTitle: L("显示控制窗口", "Show control window"), action: #selector(showControlWindow), keyEquivalent: "")
+        show.target = self
+        toggleItem = menu.addItem(withTitle: L("关闭内置屏幕", "Turn off built-in display"), action: #selector(toggle), keyEquivalent: "")
+        toggleItem.target = self
+        let restore = menu.addItem(withTitle: L("恢复内置屏幕", "Restore built-in display"), action: #selector(restore), keyEquivalent: "r")
+        restore.keyEquivalentModifierMask = [.command, .option]
+        restore.target = self
+        menu.addItem(.separator())
+        menu.addItem(languageMenu())
+        let help = menu.addItem(withTitle: L("使用与安全说明…", "Usage and safety…"), action: #selector(showHelp), keyEquivalent: "")
+        help.target = self
+        let diagnostic = menu.addItem(withTitle: L("复制只读诊断", "Copy read-only diagnostics"), action: #selector(copyDiagnostic), keyEquivalent: "")
+        diagnostic.target = self
+        let quit = menu.addItem(withTitle: L("恢复屏幕并退出", "Restore and quit"), action: #selector(quit), keyEquivalent: "q")
+        quit.target = self
+        menu.autoenablesItems = false
+        statusItem.menu = menu
     }
 
     private func installApplicationMenu() {
@@ -51,12 +78,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
         let show = appMenu.addItem(
-            withTitle: "显示控制窗口", action: #selector(showControlWindow), keyEquivalent: "0"
+            withTitle: L("显示控制窗口", "Show control window"), action: #selector(showControlWindow), keyEquivalent: "0"
         )
         show.target = self
+        appMenu.addItem(languageMenu())
         appMenu.addItem(.separator())
         let quit = appMenu.addItem(
-            withTitle: "恢复屏幕并退出 ScreenSwitch", action: #selector(quit), keyEquivalent: "q"
+            withTitle: L("恢复屏幕并退出 ScreenSwitch", "Restore and quit ScreenSwitch"), action: #selector(quit), keyEquivalent: "q"
         )
         quit.target = self
         appItem.submenu = appMenu
@@ -64,24 +92,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = menu
     }
 
+    @objc private func selectMenuLanguage(_ sender: NSMenuItem) {
+        setLanguage(AppLanguage.allCases[sender.tag])
+    }
+
+    @objc private func selectWindowLanguage(_ sender: NSPopUpButton) {
+        setLanguage(AppLanguage.allCases[sender.indexOfSelectedItem])
+    }
+
+    private func setLanguage(_ language: AppLanguage) {
+        LanguageSettings.shared.language = language
+        installApplicationMenu()
+        installStatusMenu()
+        localizedWindowText.forEach { $0() }
+        languagePopup?.selectItem(at: AppLanguage.allCases.firstIndex(of: language)!)
+        controlWindow?.title = L("ScreenSwitch · 内置屏幕开关", "ScreenSwitch · Built-in display")
+        updateMenu()
+    }
+
     @objc private func showControlWindow() {
         if controlWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 440, height: 300),
+                contentRect: NSRect(x: 0, y: 0, width: 520, height: 400),
                 styleMask: [.titled, .closable, .miniaturizable],
                 backing: .buffered, defer: false
             )
-            window.title = "ScreenSwitch · 内置屏幕开关"
+            window.title = L("ScreenSwitch · 内置屏幕开关", "ScreenSwitch · Built-in display")
             window.isReleasedWhenClosed = false
             let title = NSTextField(labelWithString: "内置屏幕开关")
+            localizedWindowText.append { title.stringValue = L("内置屏幕开关", "Built-in display") }
             title.font = .boldSystemFont(ofSize: 22)
             let status = NSTextField(wrappingLabelWithString: controller.message)
             status.font = .systemFont(ofSize: 14)
             status.setAccessibilityIdentifier("displayStatus")
             windowStatus = status
-            let detail = NSTextField(wrappingLabelWithString:
-                "连接并唤醒外接显示器后，才能关闭内置屏幕。\n关闭窗口后仍会运行；点击 Dock 图标可再次打开。"
-            )
+            let detail = NSTextField(wrappingLabelWithString: "")
+            localizedWindowText.append {
+                detail.stringValue = L(
+                    "连接并唤醒外接显示器后，才能关闭内置屏幕。\n异常退出后，重新打开 ScreenSwitch 会优先尝试恢复内屏。",
+                    "Connect and wake an external monitor before turning off this display.\nAfter a crash, reopen ScreenSwitch to attempt recovery first."
+                )
+            }
             detail.textColor = .secondaryLabelColor
             let toggle = NSButton(title: toggleItem.title, target: self, action: #selector(self.toggle))
             toggle.bezelStyle = .rounded
@@ -89,18 +140,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             toggle.setAccessibilityIdentifier("displayToggle")
             windowToggle = toggle
             let restore = NSButton(title: "恢复内置屏幕", target: self, action: #selector(self.restore))
+            localizedWindowText.append { restore.title = L("恢复内置屏幕", "Restore built-in display") }
             restore.bezelStyle = .rounded
             let buttons = NSStackView(views: [toggle, restore])
             buttons.orientation = .horizontal
             buttons.spacing = 12
             let help = NSButton(title: "使用与安全说明", target: self, action: #selector(showHelp))
+            localizedWindowText.append { help.title = L("使用与安全说明", "Usage and safety") }
             help.bezelStyle = .rounded
             let quit = NSButton(title: "恢复屏幕并退出", target: self, action: #selector(self.quit))
+            localizedWindowText.append { quit.title = L("恢复屏幕并退出", "Restore and quit") }
             quit.bezelStyle = .rounded
             let footer = NSStackView(views: [help, quit])
             footer.orientation = .horizontal
             footer.spacing = 12
-            let stack = NSStackView(views: [title, status, detail, buttons, footer])
+            let languageLabel = NSTextField(labelWithString: "语言 / Language")
+            let popup = NSPopUpButton()
+            popup.addItems(withTitles: ["简体中文", "English"])
+            popup.selectItem(at: AppLanguage.allCases.firstIndex(of: LanguageSettings.shared.language)!)
+            popup.target = self
+            popup.action = #selector(selectWindowLanguage(_:))
+            popup.setAccessibilityIdentifier("languageSelector")
+            languagePopup = popup
+            let languages = NSStackView(views: [languageLabel, popup])
+            languages.orientation = .horizontal
+            languages.spacing = 12
+            let stack = NSStackView(views: [title, status, detail, buttons, footer, languages])
             stack.orientation = .vertical
             stack.alignment = .leading
             stack.spacing = 18
@@ -111,11 +176,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
                     stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
                     stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
-                    stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -24)
+                    stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -24),
+                    status.widthAnchor.constraint(equalTo: stack.widthAnchor),
+                    detail.widthAnchor.constraint(equalTo: stack.widthAnchor)
                 ])
             }
             window.center()
             controlWindow = window
+            localizedWindowText.forEach { $0() }
         }
         updateMenu()
         controlWindow?.deminiaturize(nil)
@@ -128,6 +196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        controller.recoverOnReopen()
         showControlWindow()
         return true
     }
@@ -139,7 +208,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateMenu() {
         descriptionItem.title = controller.message
         let needsRestore = controller.recoveryPending || controller.snapshot?.builtinActive == false
-        toggleItem.title = needsRestore ? "恢复内置屏幕" : "关闭内置屏幕"
+        toggleItem.title = needsRestore
+            ? L("恢复内置屏幕", "Restore built-in display")
+            : L("关闭内置屏幕", "Turn off built-in display")
         toggleItem.state = controller.recoveryPending ? .on : .off
         toggleItem.isEnabled = !controller.busy && (needsRestore ? controller.apiAvailable : controller.canDisable)
         windowStatus?.stringValue = controller.message
@@ -157,16 +228,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.restore()
         } else {
             let alert = NSAlert()
-            alert.messageText = "关闭内置屏幕，只在外接显示器上工作？"
-            alert.informativeText = """
+            alert.messageText = L("关闭内置屏幕，只在外接显示器上工作？", "Turn off the built-in display and use only the external monitor?")
+            alert.informativeText = L("""
             这会尝试真正停用内屏桌面输出，不是调暗。键盘和触摸板不作更改。
 
             此功能使用 Apple 未公开支持的接口，M3 Pro / Max 上的实际关屏与恢复效果需自行确认。请保持笔记本打开，先确保外屏能显示桌面。
 
             拔掉最后一个可用外屏将触发恢复；若恢复失败，可接回外屏，或重新启动 Mac。
-            """
-            alert.addButton(withTitle: "取消")
-            alert.addButton(withTitle: "关闭内置屏幕")
+            """, """
+            This attempts to disable the built-in desktop output, not dim it. Keyboard and trackpad settings are unchanged.
+
+            This uses an unsupported Apple API. Actual disabling and restoration on M3 Pro / Max require hardware verification. Keep the lid open and ensure the external monitor shows a usable desktop.
+
+            Unplugging the last usable external monitor triggers a restoration attempt. If it fails, reconnect the monitor or restart the Mac.
+            """)
+            alert.addButton(withTitle: L("取消", "Cancel"))
+            alert.addButton(withTitle: L("关闭内置屏幕", "Turn off built-in display"))
             NSApp.activate(ignoringOtherApps: true)
             if alert.runModal() == .alertSecondButtonReturn { controller.disable() }
         }
@@ -177,17 +254,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showHelp() {
         let alert = NSAlert()
-        alert.messageText = "ScreenSwitch 使用与安全说明"
-        alert.informativeText = """
+        alert.messageText = L("ScreenSwitch 使用与安全说明", "ScreenSwitch usage and safety")
+        alert.informativeText = L("""
         连接并唤醒外屏后，点击“关闭内置屏幕”。外屏必须正在输出桌面；不建议把 AirPlay、虚拟屏或远程桌面当作唯一外屏。
 
         拔线、休眠及正常退出时会尝试恢复。外屏重接或唤醒后不会自动关屏。请勿同时使用其他显示器禁用工具。
 
-        如异常黑屏：接回外屏；运行随附的“恢复内置屏幕.app”；尝试合盖再开盖；仍无效请重新启动 Mac。强制退出、崩溃、系统或驱动故障时，自动恢复不能保证。
+        如异常黑屏：接回外屏；重新打开 ScreenSwitch（优先尝试恢复），或选择“恢复内置屏幕”；尝试合盖再开盖；仍无效请重新启动 Mac。强制退出、崩溃、系统或驱动故障时，自动恢复不能保证。
 
         不需要管理员权限，不修改 SIP、亮度或全局电源设置。私有接口可用不等于硬件兼容；首次操作前请阅读 README.md。
-        """
-        alert.addButton(withTitle: "知道了")
+        """, """
+        Connect and wake an external monitor showing a usable desktop before turning off the built-in display. Do not rely on AirPlay, virtual displays or remote desktops as the only external display.
+
+        Restoration is attempted on unplug, sleep and normal quit. Reconnection or wake never automatically turns the display off. Avoid other display-disabling utilities.
+
+        If the screen goes black: reconnect the monitor; reopen ScreenSwitch to attempt recovery first, or choose Restore built-in display; try closing and reopening the lid; restart the Mac if necessary. Recovery is not guaranteed after crashes, force quit, system or driver failures.
+
+        No administrator access, SIP, brightness or global power changes are needed. A private API being available does not establish hardware compatibility.
+        """)
+        alert.addButton(withTitle: L("知道了", "OK"))
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
     }
@@ -197,19 +282,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let text = try driver.diagnosticText()
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
-        } catch { showError(error.localizedDescription) }
+        } catch { showError(error) }
     }
 
-    private func showError(_ text: String) {
+    private func showError(_ error: Error) {
         guard !alertVisible else { return }
         alertVisible = true
         // Present outside display callbacks to avoid nested display transactions.
         DispatchQueue.main.async { [weak self] in
             let alert = NSAlert()
             alert.alertStyle = .warning
-            alert.messageText = "屏幕操作未完成"
-            alert.informativeText = text
-            alert.addButton(withTitle: "知道了")
+            alert.messageText = L("屏幕操作未完成", "Display operation incomplete")
+            alert.informativeText = error.localizedDescription
+            alert.addButton(withTitle: L("知道了", "OK"))
             NSApp.activate(ignoringOtherApps: true)
             alert.runModal()
             self?.alertVisible = false
@@ -229,7 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, self.waitingForQuit else { return }
             self.waitingForQuit = false
             NSApp.reply(toApplicationShouldTerminate: false)
-            self.showError("尚未确认内置屏幕恢复，已取消退出并继续尝试恢复。请接回外屏，必要时重新启动 Mac。")
+            self.showError(DisplayFailure.quitCancelled)
         }
         quitTimeout = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: timeout)
@@ -251,6 +336,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     #if DEBUG
     func checkControlWindow() {
+        let originalLanguage = LanguageSettings.shared.language
+        defer { LanguageSettings.shared.language = originalLanguage }
+        LanguageSettings.shared.language = .chinese
         applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         precondition(controlWindow?.isVisible == true, "Control window must be visible on launch")
         precondition(NSApp.activationPolicy() == .regular, "Dock entry must be present")
@@ -259,13 +347,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if controller.snapshot?.usableExternalIDs.isEmpty == true {
             precondition(windowToggle?.isEnabled == false, "No external must prevent disabling")
         }
+        precondition(windowToggle?.title == "关闭内置屏幕", "Initial UI must be Chinese")
+        languagePopup?.selectItem(at: 1)
+        selectWindowLanguage(languagePopup!)
+        precondition(windowToggle?.title == "Turn off built-in display", "Window language selector must translate actions")
+        precondition(controlWindow?.title == "ScreenSwitch · Built-in display", "Window title must translate")
+        precondition(controller.message == "Connect and wake an external monitor first", "Status must translate immediately")
+        precondition(windowToggle?.isEnabled == false, "Switching language must not bypass display safety")
+        precondition(toggleItem.title == windowToggle?.title, "Menu and window must use the same language")
+        controlWindow?.contentView?.layoutSubtreeIfNeeded()
+        if let content = controlWindow?.contentView {
+            func checkLayout(_ view: NSView) {
+                for child in view.subviews {
+                    if !(child is NSButton), !(child is NSPopUpButton) {
+                        checkLayout(child)
+                    }
+                    let frame = content.convert(child.bounds, from: child)
+                    precondition(frame.maxX <= content.bounds.maxX + 1, "English controls must not overflow the window")
+                    precondition(frame.minX >= -1 && frame.minY >= -1, "Controls must stay inside the window")
+                }
+            }
+            checkLayout(content)
+        }
+        precondition(LanguageSettings().language == .english, "Language must persist across settings instances")
+        let languageItem = NSMenuItem()
+        languageItem.tag = 0
+        selectMenuLanguage(languageItem)
+        precondition(windowToggle?.title == "关闭内置屏幕", "Menu selector must switch back to Chinese")
+        precondition(languagePopup?.indexOfSelectedItem == 0, "Window selector must follow menu language")
+        if let backend = driver as? SimulatedDisplay {
+            backend.externalCount = 1
+            controller.refresh()
+            precondition(windowToggle?.isEnabled == true, "External monitor enables the manual action")
+            controller.disable()
+            precondition(windowToggle?.title == "恢复内置屏幕", "Off state must offer restoration")
+            languagePopup?.selectItem(at: 1)
+            selectWindowLanguage(languagePopup!)
+            precondition(windowToggle?.title == "Restore built-in display", "Off-state action translates")
+            precondition(windowStatus?.stringValue == "Built-in display off · External display in use", "Off-state status translates")
+            _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: true)
+            precondition(backend.calls == [false, true], "Reopening the running single app must restore the panel")
+            precondition(windowToggle?.title == "Turn off built-in display", "Restored state reflects in the window")
+            precondition(applicationShouldTerminate(NSApp) == .terminateNow, "Confirmed restored panel allows normal quit")
+            backend.externalCount = 0
+            controller.refresh()
+            setLanguage(.chinese)
+        }
         controlWindow?.close()
         precondition(!applicationShouldTerminateAfterLastWindowClosed(NSApp), "Closing window must not stop safety checks")
         _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
         precondition(controlWindow?.isVisible == true, "Dock/Finder reopen must restore the window")
         controller.stop()
         controlWindow?.close()
-        print("PASS: control window launch, Dock mode, shared safety state, close and reopen; no disable action invoked.")
+        print("PASS: simulated UI launch, Chinese default, live bilingual switching, persistence, shared safety state, close and reopen; no real driver instantiated.")
     }
     #endif
 }

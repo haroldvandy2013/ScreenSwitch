@@ -22,13 +22,14 @@ package_app() {
     <key>CFBundleName</key><string>$display_name</string>
     <key>CFBundleDisplayName</key><string>$display_name</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>0.2.0</string>
+    <key>CFBundleVersion</key><string>2</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><$menu_only/>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
+    <key>CFBundleLocalizations</key><array><string>zh-Hans</string><string>en</string></array>
 </dict></plist>
 EOF
     plutil -lint "$app/Contents/Info.plist"
@@ -36,5 +37,4 @@ EOF
 }
 
 package_app "dist/ScreenSwitch.app" "local.ScreenSwitch" "ScreenSwitch" false
-package_app "dist/恢复内置屏幕.app" "local.ScreenSwitch.restore" "恢复内置屏幕" true
-printf '\n已构建：\n%s/dist/ScreenSwitch.app\n%s/dist/恢复内置屏幕.app\n' "$PWD" "$PWD"
+printf '\n已构建（含恢复功能）：\n%s/dist/ScreenSwitch.app\n' "$PWD"

@@ -29,11 +29,12 @@ final class DisplayController {
     private var restoreCommandSucceeded = false
     private var restoreFailureAlerted = false
     private var nextRestoreAttempt = Date.distantPast
-    private var lastLoggedError: String?
+    private var lastError: Error?
+    private var lastLoggedMessage: String?
     private(set) var snapshot: DisplaySnapshot?
-    private(set) var message = "正在读取显示器…"
+    var message: String { statusMessage() }
     var onChange: (() -> Void)?
-    var onError: ((String) -> Void)?
+    var onError: ((Error) -> Void)?
     var onRestored: (() -> Void)?
 
     init(driver: DisplayBackend, now: @escaping () -> Date = Date.init) {
@@ -60,7 +61,7 @@ final class DisplayController {
         let result = CGDisplayRegisterReconfigurationCallback(displayCallback, nil)
         callbackRegistered = result == .success
         if !callbackRegistered {
-            report("无法注册底层显示变化回调（\(result.rawValue)），仍使用系统通知和每秒安全检查。")
+            report(DisplayFailure.callback(result.rawValue))
         }
         let center = NotificationCenter.default
         for name in [displayChanged, NSApplication.didChangeScreenParametersNotification] {
@@ -90,6 +91,7 @@ final class DisplayController {
         }
         RunLoop.main.add(timer!, forMode: .common)
         refresh()
+        if !recoveryPending && snapshot?.builtinActive == false { restore() }
     }
 
     func stop() {
@@ -112,10 +114,15 @@ final class DisplayController {
         refresh()
     }
 
+    func recoverOnReopen() {
+        refresh()
+        if recoveryPending || snapshot?.builtinActive == false { restore() }
+    }
+
     func disable() {
         refresh()
         guard canDisable else {
-            onError?("当前不能关闭内置屏幕：请确认外接显示器已连接、唤醒且正在显示桌面。")
+            onError?(DisplayFailure.disableUnavailable)
             return
         }
         do {
@@ -126,8 +133,8 @@ final class DisplayController {
         } catch {
             operation = nil
             recoveryWanted = driver.recoveryPending
-            report(error.localizedDescription)
-            onError?(error.localizedDescription)
+            report(error)
+            onError?(error)
             if recoveryWanted { restore() }
             refresh()
         }
@@ -137,7 +144,7 @@ final class DisplayController {
         recoveryWanted = true
         restoreCommandSucceeded = false
         restoreFailureAlerted = false
-        if !driver.markRecoveryPending() { report(DisplayFailure.recoveryRecord.localizedDescription) }
+        if !driver.markRecoveryPending() { report(DisplayFailure.recoveryRecord) }
         operation = .restoring(now().addingTimeInterval(5))
         nextRestoreAttempt = .distantPast
         attemptRestore()
@@ -154,7 +161,7 @@ final class DisplayController {
             restoreCommandSucceeded = true
             logger.info("Restore transaction committed; awaiting active-state verification")
         } catch {
-            report(error.localizedDescription)
+            report(error)
         }
     }
 
@@ -182,9 +189,8 @@ final class DisplayController {
                     operation = nil
                     recoveryWanted = true
                     restoreCommandSucceeded = false
-                    let text = "接口返回后内置屏幕仍在输出，关屏未成功。已请求恢复，不会用调暗或黑色窗口代替。"
-                    report(text)
-                    onError?(text)
+                    report(DisplayFailure.disableNotApplied)
+                    onError?(DisplayFailure.disableNotApplied)
                 }
             }
 
@@ -193,7 +199,8 @@ final class DisplayController {
                     driver.markRecovered()
                     recoveryWanted = false
                     operation = nil
-                    lastLoggedError = nil
+                    lastError = nil
+                    lastLoggedMessage = nil
                     onRestored?()
                 } else {
                     if operation == nil { operation = .restoring(now().addingTimeInterval(5)) }
@@ -207,15 +214,13 @@ final class DisplayController {
             if case .restoring(let deadline) = operation,
                now() >= deadline, !restoreFailureAlerted {
                 restoreFailureAlerted = true
-                report(DisplayFailure.notRestored.localizedDescription)
-                onError?(DisplayFailure.notRestored.localizedDescription)
+                report(DisplayFailure.notRestored)
+                onError?(DisplayFailure.notRestored)
                 // Keep retrying, but do not repeatedly present modal alerts.
             }
-            updateMessage()
         } catch {
             snapshot = nil
-            message = error.localizedDescription
-            report(error.localizedDescription)
+            report(error)
             // Enumeration failure must not silently leave an intentionally disabled panel.
             if recoveryPending {
                 if !recoveryWanted {
@@ -229,29 +234,34 @@ final class DisplayController {
         onChange?()
     }
 
-    private func updateMessage() {
+    private func statusMessage() -> String {
+        if snapshot == nil {
+            return lastError?.localizedDescription ?? L("正在读取显示器…", "Reading displays…")
+        }
         if recoveryWanted {
-            message = lastLoggedError ?? "正在恢复内置屏幕…"
+            return lastError?.localizedDescription ?? L("正在恢复内置屏幕…", "Restoring built-in display…")
         } else if case .disabling = operation {
-            message = "正在确认内置屏幕已关闭…"
+            return L("正在确认内置屏幕已关闭…", "Confirming built-in display is disabled…")
         } else if recoveryPending {
-            message = "内置屏幕已关闭 · 外屏工作中"
+            return L("内置屏幕已关闭 · 外屏工作中", "Built-in display off · External display in use")
         } else if !apiAvailable {
-            message = "系统接口不可用 · 关屏已禁用"
+            return L("系统接口不可用 · 关屏已禁用", "System API unavailable · Disabling blocked")
         } else if snapshot?.builtinID == nil {
-            message = "未识别到内置屏幕"
+            return L("未识别到内置屏幕", "Built-in display not identified")
         } else if snapshot?.builtinActive == false {
-            message = "内置屏幕未启用 · 可尝试恢复"
+            return L("内置屏幕未启用 · 可尝试恢复", "Built-in display inactive · Try restoring")
         } else if snapshot?.usableExternalIDs.isEmpty != false {
-            message = "请先连接并唤醒外接显示器"
+            return L("请先连接并唤醒外接显示器", "Connect and wake an external monitor first")
         } else {
-            message = "内置屏幕已开启 · 可以手动关闭"
+            return L("内置屏幕已开启 · 可以手动关闭", "Built-in display on · Ready for manual disabling")
         }
     }
 
-    private func report(_ text: String) {
-        guard text != lastLoggedError else { return }
-        lastLoggedError = text
+    private func report(_ error: Error) {
+        lastError = error
+        let text = error.localizedDescription
+        guard text != lastLoggedMessage else { return }
+        lastLoggedMessage = text
         logger.error("\(text, privacy: .public)")
     }
 }
