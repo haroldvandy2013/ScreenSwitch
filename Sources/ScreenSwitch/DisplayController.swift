@@ -18,6 +18,7 @@ final class DisplayController {
 
     private let driver: DisplayBackend
     private let now: () -> Date
+    private let settings: AppSettings
     private let logger = Logger(subsystem: "local.ScreenSwitch", category: "Display")
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
@@ -25,6 +26,7 @@ final class DisplayController {
     private var callbackRegistered = false
     private var operation: Operation?
     private var sleeping = false
+    private var displaysSleeping = false
     private var recoveryWanted = false
     private var restoreCommandSucceeded = false
     private var restoreFailureAlerted = false
@@ -37,8 +39,9 @@ final class DisplayController {
     var onError: ((Error) -> Void)?
     var onRestored: (() -> Void)?
 
-    init(driver: DisplayBackend, now: @escaping () -> Date = Date.init) {
+    init(driver: DisplayBackend, settings: AppSettings = .shared, now: @escaping () -> Date = Date.init) {
         self.driver = driver
+        self.settings = settings
         self.now = now
         recoveryWanted = driver.recoveryPending
     }
@@ -53,7 +56,10 @@ final class DisplayController {
             apiAvailable: apiAvailable, builtinKnown: snapshot.builtinID != nil,
             builtinActive: snapshot.builtinActive,
             usableExternalCount: snapshot.usableExternalIDs.count,
-            recoveryPending: recoveryPending, operationPending: busy, sleeping: sleeping
+            availableExternalCount: snapshot.availableExternalIDs.count,
+            recoveryPending: recoveryPending, operationPending: busy, sleeping: sleeping,
+            displaySleeping: displaysSleeping || snapshot.externalDisplaysAsleep,
+            restoreOnDisplaySleep: settings.restoreOnDisplaySleep
         ).canDisable
     }
 
@@ -86,6 +92,16 @@ final class DisplayController {
                 self.handleWake()
             }
         })
+        workspaceObservers.append(workspace.addObserver(
+            forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleDisplaysSleep() }
+        })
+        workspaceObservers.append(workspace.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleDisplaysWake() }
+        })
         timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
         }
@@ -109,8 +125,20 @@ final class DisplayController {
 
     func handleWake() {
         sleeping = false
+        displaysSleeping = false
         // Wake never reapplies a previous disable request.
         if recoveryPending { restore() }
+        refresh()
+    }
+
+    func handleDisplaysSleep() {
+        displaysSleeping = true
+        refresh()
+    }
+
+    func handleDisplaysWake() {
+        displaysSleeping = false
+        // A display wake never reapplies a previous disable request.
         refresh()
     }
 
@@ -173,7 +201,10 @@ final class DisplayController {
                 apiAvailable: apiAvailable, builtinKnown: current.builtinID != nil,
                 builtinActive: current.builtinActive,
                 usableExternalCount: current.usableExternalIDs.count,
-                recoveryPending: recoveryPending, operationPending: busy, sleeping: sleeping
+                availableExternalCount: current.availableExternalIDs.count,
+                recoveryPending: recoveryPending, operationPending: busy, sleeping: sleeping,
+                displaySleeping: displaysSleeping || current.externalDisplaysAsleep,
+                restoreOnDisplaySleep: settings.restoreOnDisplaySleep
             )
             if policy.mustRestore && !recoveryWanted {
                 recoveryWanted = true
@@ -243,6 +274,9 @@ final class DisplayController {
         } else if case .disabling = operation {
             return L("正在确认内置屏幕已关闭…", "Confirming built-in display is disabled…")
         } else if recoveryPending {
+            if displaysSleeping || snapshot?.externalDisplaysAsleep == true {
+                return L("内置屏幕已关闭 · 显示器熄屏中", "Built-in display off · Displays asleep")
+            }
             return L("内置屏幕已关闭 · 外屏工作中", "Built-in display off · External display in use")
         } else if !apiAvailable {
             return L("系统接口不可用 · 关屏已禁用", "System API unavailable · Disabling blocked")
@@ -250,6 +284,8 @@ final class DisplayController {
             return L("未识别到内置屏幕", "Built-in display not identified")
         } else if snapshot?.builtinActive == false {
             return L("内置屏幕未启用 · 可尝试恢复", "Built-in display inactive · Try restoring")
+        } else if displaysSleeping || snapshot?.externalDisplaysAsleep == true {
+            return L("显示器已熄屏 · 等待唤醒", "Displays asleep · Waiting for wake")
         } else if snapshot?.usableExternalIDs.isEmpty != false {
             return L("请先连接并唤醒外接显示器", "Connect and wake an external monitor first")
         } else {

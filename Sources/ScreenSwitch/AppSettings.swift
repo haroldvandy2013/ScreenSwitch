@@ -5,8 +5,8 @@ enum AppLanguage: String, CaseIterable {
     case english = "en"
 }
 
-final class LanguageSettings {
-    static let shared = LanguageSettings()
+final class AppSettings {
+    static let shared = AppSettings()
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = UserDefaults(suiteName: "local.ScreenSwitch.settings")!) {
@@ -21,8 +21,13 @@ final class LanguageSettings {
             defaults.set(newValue.rawValue, forKey: "language")
         }
     }
+
+    var restoreOnDisplaySleep: Bool {
+        get { defaults.bool(forKey: "restoreOnDisplaySleep") }
+        set { defaults.set(newValue, forKey: "restoreOnDisplaySleep") }
+    }
 }
 
 func L(_ chinese: String, _ english: String) -> String {
-    LanguageSettings.shared.language == .chinese ? chinese : english
+    AppSettings.shared.language == .chinese ? chinese : english
 }

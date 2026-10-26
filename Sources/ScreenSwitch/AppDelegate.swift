@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowStatus: NSTextField?
     private var windowToggle: NSButton?
     private var languagePopup: NSPopUpButton?
+    private var displaySleepCheckbox: NSButton?
+    private var displaySleepMenuItem: NSMenuItem?
     private var localizedWindowText: [() -> Void] = []
 
     init(driver: DisplayBackend = DisplayDriver()) {
@@ -43,7 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             option.target = self
             option.tag = index
-            option.state = LanguageSettings.shared.language == language ? .on : .off
+            option.state = AppSettings.shared.language == language ? .on : .off
         }
         item.submenu = menu
         return item
@@ -62,6 +64,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         restore.keyEquivalentModifierMask = [.command, .option]
         restore.target = self
         menu.addItem(.separator())
+        displaySleepMenuItem = menu.addItem(
+            withTitle: L("熄屏时自动恢复内置屏幕", "Restore built-in display on screen sleep"),
+            action: #selector(toggleDisplaySleepRecovery), keyEquivalent: ""
+        )
+        displaySleepMenuItem?.target = self
+        displaySleepMenuItem?.state = AppSettings.shared.restoreOnDisplaySleep ? .on : .off
         menu.addItem(languageMenu())
         let help = menu.addItem(withTitle: L("使用与安全说明…", "Usage and safety…"), action: #selector(showHelp), keyEquivalent: "")
         help.target = self
@@ -100,8 +108,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setLanguage(AppLanguage.allCases[sender.indexOfSelectedItem])
     }
 
+    @objc private func toggleDisplaySleepRecovery() {
+        AppSettings.shared.restoreOnDisplaySleep.toggle()
+        updateMenu()
+    }
+
     private func setLanguage(_ language: AppLanguage) {
-        LanguageSettings.shared.language = language
+        AppSettings.shared.language = language
         installApplicationMenu()
         installStatusMenu()
         localizedWindowText.forEach { $0() }
@@ -157,7 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let languageLabel = NSTextField(labelWithString: "语言 / Language")
             let popup = NSPopUpButton()
             popup.addItems(withTitles: ["简体中文", "English"])
-            popup.selectItem(at: AppLanguage.allCases.firstIndex(of: LanguageSettings.shared.language)!)
+            popup.selectItem(at: AppLanguage.allCases.firstIndex(of: AppSettings.shared.language)!)
             popup.target = self
             popup.action = #selector(selectWindowLanguage(_:))
             popup.setAccessibilityIdentifier("languageSelector")
@@ -165,7 +178,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let languages = NSStackView(views: [languageLabel, popup])
             languages.orientation = .horizontal
             languages.spacing = 12
-            let stack = NSStackView(views: [title, status, detail, buttons, footer, languages])
+            let checkbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleDisplaySleepRecovery))
+            checkbox.setAccessibilityIdentifier("restoreOnDisplaySleep")
+            localizedWindowText.append {
+                checkbox.title = L("熄屏时自动恢复内置屏幕", "Restore built-in display on screen sleep")
+                checkbox.toolTip = L(
+                    "默认关闭。勾选后，显示器熄屏时尝试恢复内屏输出；不发送唤醒电脑的命令，唤醒后不再自动关闭内屏。",
+                    "Off by default. When checked, display sleep triggers a restoration attempt. No computer-wake command is sent; waking never turns the panel off again."
+                )
+            }
+            displaySleepCheckbox = checkbox
+            let stack = NSStackView(views: [title, status, detail, buttons, footer, languages, checkbox])
             stack.orientation = .vertical
             stack.alignment = .leading
             stack.spacing = 18
@@ -216,6 +239,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windowStatus?.stringValue = controller.message
         windowToggle?.title = toggleItem.title
         windowToggle?.isEnabled = toggleItem.isEnabled
+        let restoreOnSleep = AppSettings.shared.restoreOnDisplaySleep
+        displaySleepCheckbox?.state = restoreOnSleep ? .on : .off
+        displaySleepMenuItem?.state = restoreOnSleep ? .on : .off
         statusItem.button?.image = NSImage(
             systemSymbolName: controller.recoveryPending ? "display" : "laptopcomputer",
             accessibilityDescription: controller.message
@@ -260,6 +286,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         拔线、休眠及正常退出时会尝试恢复。外屏重接或唤醒后不会自动关屏。请勿同时使用其他显示器禁用工具。
 
+        “熄屏时自动恢复内置屏幕”默认关闭，只有勾选后才在显示器熄屏时尝试恢复内屏输出。它不重启电脑，也不发送唤醒命令；实际亮屏行为取决于系统。系统休眠、拔线和退出时的安全恢复不受此选项影响。
+
         如异常黑屏：接回外屏；重新打开 ScreenSwitch（优先尝试恢复），或选择“恢复内置屏幕”；尝试合盖再开盖；仍无效请重新启动 Mac。强制退出、崩溃、系统或驱动故障时，自动恢复不能保证。
 
         不需要管理员权限，不修改 SIP、亮度或全局电源设置。私有接口可用不等于硬件兼容；首次操作前请阅读 README.md。
@@ -267,6 +295,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Connect and wake an external monitor showing a usable desktop before turning off the built-in display. Do not rely on AirPlay, virtual displays or remote desktops as the only external display.
 
         Restoration is attempted on unplug, sleep and normal quit. Reconnection or wake never automatically turns the display off. Avoid other display-disabling utilities.
+
+        Restore built-in display on screen sleep is off by default. Enable it to attempt restoration when displays sleep. It does not reboot the Mac or send wake commands; actual screen illumination depends on macOS. System-sleep, unplug and quit recovery remain enabled regardless of this option.
 
         If the screen goes black: reconnect the monitor; reopen ScreenSwitch to attempt recovery first, or choose Restore built-in display; try closing and reopening the lid; restart the Mac if necessary. Recovery is not guaranteed after crashes, force quit, system or driver failures.
 
@@ -336,9 +366,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     #if DEBUG
     func checkControlWindow() {
-        let originalLanguage = LanguageSettings.shared.language
-        defer { LanguageSettings.shared.language = originalLanguage }
-        LanguageSettings.shared.language = .chinese
+        let originalLanguage = AppSettings.shared.language
+        let originalRestoreOnSleep = AppSettings.shared.restoreOnDisplaySleep
+        defer {
+            AppSettings.shared.language = originalLanguage
+            AppSettings.shared.restoreOnDisplaySleep = originalRestoreOnSleep
+        }
+        AppSettings.shared.language = .chinese
+        AppSettings.shared.restoreOnDisplaySleep = false
         applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         precondition(controlWindow?.isVisible == true, "Control window must be visible on launch")
         precondition(NSApp.activationPolicy() == .regular, "Dock entry must be present")
@@ -348,6 +383,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             precondition(windowToggle?.isEnabled == false, "No external must prevent disabling")
         }
         precondition(windowToggle?.title == "关闭内置屏幕", "Initial UI must be Chinese")
+        precondition(displaySleepCheckbox?.state == .off, "Optional restoration must start unchecked")
+        precondition(displaySleepMenuItem?.state == .off, "Menu must reflect unchecked preference")
+        displaySleepCheckbox?.performClick(nil)
+        precondition(AppSettings().restoreOnDisplaySleep, "Checkbox selection must persist")
+        precondition(displaySleepMenuItem?.state == .on, "Menu must follow the checkbox")
+        toggleDisplaySleepRecovery()
+        precondition(displaySleepCheckbox?.state == .off, "Menu toggle must update the checkbox")
+        if let backend = driver as? SimulatedDisplay {
+            precondition(backend.calls.isEmpty, "Changing the option alone must not alter displays")
+        }
         languagePopup?.selectItem(at: 1)
         selectWindowLanguage(languagePopup!)
         precondition(windowToggle?.title == "Turn off built-in display", "Window language selector must translate actions")
@@ -355,6 +400,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         precondition(controller.message == "Connect and wake an external monitor first", "Status must translate immediately")
         precondition(windowToggle?.isEnabled == false, "Switching language must not bypass display safety")
         precondition(toggleItem.title == windowToggle?.title, "Menu and window must use the same language")
+        precondition(displaySleepCheckbox?.title == "Restore built-in display on screen sleep", "Option must translate")
+        precondition(displaySleepMenuItem?.title == displaySleepCheckbox?.title, "Both option entries must translate")
         controlWindow?.contentView?.layoutSubtreeIfNeeded()
         if let content = controlWindow?.contentView {
             func checkLayout(_ view: NSView) {
@@ -369,7 +416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             checkLayout(content)
         }
-        precondition(LanguageSettings().language == .english, "Language must persist across settings instances")
+        precondition(AppSettings().language == .english, "Language must persist across settings instances")
         let languageItem = NSMenuItem()
         languageItem.tag = 0
         selectMenuLanguage(languageItem)

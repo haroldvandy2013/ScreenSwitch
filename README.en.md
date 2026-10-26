@@ -30,7 +30,11 @@ The apps are **not Apple-notarized**. If launch is blocked, try Finder's right-c
 
 Use **语言 / Language** in the window or menu to select “简体中文” or “English”. Changes apply immediately and are remembered. A fresh installation defaults to Chinese.
 
+**Optional: Restore built-in display on screen sleep.** Unchecked by default. When enabled, display sleep triggers an attempt to restore the panel disabled by this app; the choice is remembered. This means actual display sleep, not just locking the screen or starting a screensaver. It does not reboot the Mac or send wake commands; screen illumination depends on macOS. Waking never automatically disables the panel again.
+
 The app attempts restoration when the last usable external display disconnects, before sleep, and on normal quit. Reconnecting a monitor or waking the Mac **never automatically disables the panel**.
+
+System-sleep, unplug and quit recovery remain enabled regardless of the screen-sleep option.
 
 Closing the window keeps the app running. Clicking its Dock icon or reopening the app first attempts restoration if the panel is inactive or recovery is pending. Quit using **恢复屏幕并退出** (“Restore and quit”), rather than force-quitting.
 

@@ -72,7 +72,10 @@ struct DisplaySnapshot {
     let onlineIDs: [CGDirectDisplayID]
     let builtinID: CGDirectDisplayID?
     let builtinActive: Bool
+    // Sleeping panels remain available for unplug safety, but cannot authorize disabling.
+    let availableExternalIDs: [CGDirectDisplayID]
     let usableExternalIDs: [CGDirectDisplayID]
+    let externalDisplaysAsleep: Bool
 }
 
 protocol DisplayBackend: AnyObject {
@@ -137,14 +140,22 @@ final class DisplayDriver: DisplayBackend {
         if let builtin, preferences.object(forKey: builtinKey) as? NSNumber != NSNumber(value: builtin) {
             preferences.set(NSNumber(value: builtin), forKey: builtinKey)
         }
+        let externalIDs = ids.filter {
+            CGDisplayIsBuiltin($0) == 0
+                && CGDisplayPixelsWide($0) > 0 && CGDisplayPixelsHigh($0) > 0
+        }
         return DisplaySnapshot(
             onlineIDs: ids,
             builtinID: builtin,
             builtinActive: builtin.map { CGDisplayIsActive($0) != 0 } ?? false,
-            usableExternalIDs: ids.filter {
-                CGDisplayIsBuiltin($0) == 0 && CGDisplayIsActive($0) != 0
-                    && CGDisplayIsAsleep($0) == 0
-                    && CGDisplayPixelsWide($0) > 0 && CGDisplayPixelsHigh($0) > 0
+            availableExternalIDs: externalIDs.filter {
+                CGDisplayIsActive($0) != 0 || CGDisplayIsAsleep($0) != 0
+            },
+            usableExternalIDs: externalIDs.filter {
+                CGDisplayIsActive($0) != 0 && CGDisplayIsAsleep($0) == 0
+            },
+            externalDisplaysAsleep: !externalIDs.isEmpty && externalIDs.allSatisfy {
+                CGDisplayIsAsleep($0) != 0
             }
         )
     }
@@ -209,6 +220,8 @@ final class DisplayDriver: DisplayBackend {
         \(L("内置屏幕 ID", "Built-in display ID")): \(state.builtinID.map(String.init) ?? L("未识别", "unknown"))
         \(L("内置屏幕活动", "Built-in display active")): \(state.builtinActive)
         \(L("可用外屏 ID", "Usable external display IDs")): \(state.usableExternalIDs)
+        \(L("外屏均已熄屏", "All external displays asleep")): \(state.externalDisplaysAsleep)
+        \(L("熄屏时自动恢复", "Restore on display sleep")): \(AppSettings.shared.restoreOnDisplaySleep)
         \(L("待恢复标记", "Recovery pending")): \(recoveryPending)
         """
     }

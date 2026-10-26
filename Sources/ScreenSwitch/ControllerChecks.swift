@@ -10,6 +10,7 @@ final class SimulatedDisplay: DisplayBackend {
     var delayDisable = false
     var rejectRestore = false
     var rejectDisable = false
+    var externalAsleep = false
     var calls: [Bool] = []
 
     func snapshot() throws -> DisplaySnapshot {
@@ -17,7 +18,9 @@ final class SimulatedDisplay: DisplayBackend {
             onlineIDs: builtinActive ? [1] : [],
             builtinID: builtinKnown ? 1 : nil,
             builtinActive: builtinActive,
-            usableExternalIDs: Array(10..<(10 + UInt32(externalCount)))
+            availableExternalIDs: Array(10..<(10 + UInt32(externalCount))),
+            usableExternalIDs: externalAsleep ? [] : Array(10..<(10 + UInt32(externalCount))),
+            externalDisplaysAsleep: externalAsleep && externalCount > 0
         )
     }
 
@@ -193,25 +196,111 @@ func runControllerChecks() {
         let suite = "local.ScreenSwitch.checks.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
-        let settings = LanguageSettings(defaults: defaults)
+        let settings = AppSettings(defaults: defaults)
         expect(settings.language == .chinese, "Fresh installation defaults to Chinese")
         settings.language = .english
-        expect(LanguageSettings(defaults: defaults).language == .english, "English preference survives settings recreation")
+        expect(AppSettings(defaults: defaults).language == .english, "English preference survives settings recreation")
+        expect(!settings.restoreOnDisplaySleep, "Display-sleep recovery defaults to off")
+        settings.restoreOnDisplaySleep = true
+        expect(AppSettings(defaults: defaults).restoreOnDisplaySleep, "Optional recovery persists when enabled")
+        settings.restoreOnDisplaySleep = false
+        expect(!AppSettings(defaults: defaults).restoreOnDisplaySleep, "Optional recovery persists when disabled again")
         defaults.set("unsupported", forKey: "language")
         expect(settings.language == .chinese, "Invalid stored language uses Chinese")
     }
+    for enabled in [false, true] {
+        for pollFirst in [false, true] {
+            let suite = "local.ScreenSwitch.sleepChecks.\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suite)!
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let settings = AppSettings(defaults: defaults)
+            settings.restoreOnDisplaySleep = enabled
+            let backend = SimulatedDisplay()
+            let control = DisplayController(driver: backend, settings: settings)
+            control.start()
+            defer { control.stop() }
+            control.disable()
+            if pollFirst {
+                backend.externalAsleep = true
+                control.refresh()
+                expect(
+                    backend.calls == (enabled ? [false, true] : [false]),
+                    "Polling before screen notification must obey the saved opt-in"
+                )
+            }
+            NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidSleepNotification, object: nil)
+            backend.externalAsleep = true
+            control.refresh()
+            expect(
+                backend.calls == (enabled ? [false, true] : [false]),
+                "Actual screen-sleep observer must obey the opt-in for either event order"
+            )
+            expect(!control.canDisable, "Screen sleep blocks further manual disabling")
+            backend.externalAsleep = false
+            NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.screensDidWakeNotification, object: nil)
+            control.refresh()
+            expect(
+                backend.calls == (enabled ? [false, true] : [false]),
+                "Screen wake does not re-disable or restore when the option is off"
+            )
+            if !enabled {
+                backend.externalAsleep = true
+                control.handleDisplaysSleep()
+                backend.externalCount = 0
+                control.refresh()
+                control.refresh()
+                expect(backend.calls == [false, true], "Unplug recovery remains active with the option off and displays asleep")
+            }
+        }
+    }
     do {
-        let original = LanguageSettings.shared.language
-        defer { LanguageSettings.shared.language = original }
+        let suite = "local.ScreenSwitch.sleepChecks.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = AppSettings(defaults: defaults)
+        settings.restoreOnDisplaySleep = true
+        let backend = SimulatedDisplay()
+        let control = DisplayController(driver: backend, settings: settings)
+        control.handleDisplaysSleep()
+        control.handleDisplaysWake()
+        expect(backend.calls.isEmpty, "Opt-in does not reconfigure a panel that the app has not disabled")
+        control.disable()
+        settings.restoreOnDisplaySleep = false
+        backend.externalAsleep = true
+        control.handleDisplaysSleep()
+        expect(backend.calls == [false], "Unchecking the option prevents the next display-sleep restoration")
+        control.handleSleep()
+        expect(backend.calls == [false, true], "System-sleep recovery is independent of the display-sleep option")
+    }
+    do {
+        let suite = "local.ScreenSwitch.sleepChecks.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = AppSettings(defaults: defaults)
+        settings.restoreOnDisplaySleep = true
+        let backend = SimulatedDisplay()
+        backend.delayDisable = true
+        let control = DisplayController(driver: backend, settings: settings)
+        control.disable()
+        control.handleDisplaysSleep()
+        control.refresh()
+        expect(backend.calls == [false, true], "Opted-in screen sleep cancels a disable still settling")
+        expect(!control.recoveryPending, "Settling-disable race finishes safely restored")
+        control.handleDisplaysSleep()
+        expect(backend.calls == [false, true], "Repeated screen-sleep notifications do not repeat confirmed restoration")
+    }
+    do {
+        let original = AppSettings.shared.language
+        defer { AppSettings.shared.language = original }
         let backend = SimulatedDisplay()
         backend.recoveryPending = true
         backend.builtinActive = false
         backend.rejectRestore = true
         let control = DisplayController(driver: backend)
-        LanguageSettings.shared.language = .chinese
+        AppSettings.shared.language = .chinese
         control.refresh()
         expect(control.message.contains("恢复内置屏幕"), "Recovery error is Chinese")
-        LanguageSettings.shared.language = .english
+        AppSettings.shared.language = .english
         expect(control.message.contains("Restore built-in display failed"), "Stored errors translate without retrying an operation")
         let failures: [DisplayFailure] = [
             .apiUnavailable, .enumeration(1), .noBuiltin, .noExternal,
@@ -223,9 +312,9 @@ func runControllerChecks() {
         for error in failures {
             let english = error.localizedDescription
             expect(!english.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) }, "English error must not contain untranslated Chinese")
-            LanguageSettings.shared.language = .chinese
+            AppSettings.shared.language = .chinese
             expect(error.localizedDescription != english, "Every display error has both translations")
-            LanguageSettings.shared.language = .english
+            AppSettings.shared.language = .english
         }
     }
     print("PASS: \(count) controller lifecycle checks with simulated displays; no real driver instantiated.")

@@ -21,7 +21,8 @@ for bits in 0..<128 {
     let sleeping = bits & 64 != 0
     let policy = SafetyPolicy(
         apiAvailable: api, builtinKnown: known, builtinActive: active,
-        usableExternalCount: external ? 1 : 0, recoveryPending: recovery,
+        usableExternalCount: external ? 1 : 0, availableExternalCount: external ? 1 : 0,
+        recoveryPending: recovery,
         operationPending: operation, sleeping: sleeping
     )
     expect(
@@ -37,10 +38,35 @@ for bits in 0..<128 {
 for count in [1, 2, 3] {
     let policy = SafetyPolicy(
         apiAvailable: true, builtinKnown: true, builtinActive: true,
-        usableExternalCount: count, recoveryPending: false,
+        usableExternalCount: count, availableExternalCount: count, recoveryPending: false,
         operationPending: false, sleeping: false
     )
     expect(policy.canDisable, "At least one usable external allows manual operation")
     expect(!policy.mustRestore, "A new external never requests an automatic operation")
+}
+for enabled in [false, true] {
+    for recovery in [false, true] {
+        for systemSleep in [false, true] {
+            for connected in [false, true] {
+                for displaySleep in [false, true] {
+                    let policy = SafetyPolicy(
+                        apiAvailable: true, builtinKnown: true, builtinActive: true,
+                        usableExternalCount: connected && !displaySleep ? 1 : 0,
+                        availableExternalCount: connected ? 1 : 0,
+                        recoveryPending: recovery, operationPending: false, sleeping: systemSleep,
+                        displaySleeping: displaySleep, restoreOnDisplaySleep: enabled
+                    )
+                    expect(
+                        policy.mustRestore == (recovery && (!connected || systemSleep || (enabled && displaySleep))),
+                        "Display-sleep restoration is opt-in; unplug/system sleep remain protected"
+                    )
+                    expect(
+                        policy.canDisable == (connected && !displaySleep && !systemSleep && !recovery),
+                        "Sleeping displays never authorize a new disable"
+                    )
+                }
+            }
+        }
+    }
 }
 print("PASS: \(checks) safety checks; no display configuration APIs called.")
