@@ -14,13 +14,13 @@ A simple switch attempts to disable the built-in display's desktop output—not 
 
 ## Download and install
 
-The current source and local build are **v0.2.0**. Disabling and recovery are integrated into a single **ScreenSwitch.app**; no separate restore app is needed. Build using the instructions below, then copy `dist/ScreenSwitch.app` to your Applications folder.
+Download **ScreenSwitch-v0.2.0-macos-arm64.zip** from [Releases](https://github.com/haroldvandy2013/ScreenSwitch/releases/latest). Extract it and copy **ScreenSwitch.app** to your Applications folder. Disabling and recovery are integrated into this single app; no separate restore app is needed.
 
-The existing **v0.1.0** on [Releases](https://github.com/haroldvandy2013/ScreenSwitch/releases/latest) is the older two-app package and does not include these changes. Once you update and confirm normal quit restores the panel, you may remove the old `恢复内置屏幕.app`.
+When upgrading from v0.1.0, quit the old app normally before replacing it. Once you confirm that the new app restores the panel on normal quit, you may remove the old `恢复内置屏幕.app`.
 
-Requires **macOS 13 or later**. Development used an Apple Silicon M3 Max on macOS 15.8.1; this is not a claim of verified display-control compatibility.
+The download is for **Apple Silicon Macs running macOS 13 or later**. Development used an M3 Max on macOS 15.8.1; this is not a claim of verified display-control compatibility.
 
-The apps are **not Apple-notarized**. If launch is blocked, try Finder's right-click → Open or Open Anyway in System Settings. **Do not disable system security protections.**
+The app is **not Apple-notarized**. If launch is blocked, try Finder's right-click → Open or Open Anyway in System Settings. **Do not disable system security protections.**
 
 ## Use
 

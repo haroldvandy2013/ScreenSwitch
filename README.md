@@ -14,11 +14,11 @@
 
 ## 下载与安装
 
-当前源码及本地构建为 **v0.2.0**，只需一个 **ScreenSwitch.app**，关屏和恢复功能已合并，无需另装恢复应用。按下方说明构建后，将 `dist/ScreenSwitch.app` 放入“应用程序”文件夹即可。
+前往 [Releases](https://github.com/haroldvandy2013/ScreenSwitch/releases/latest)，下载 **ScreenSwitch-v0.2.0-macos-arm64.zip**。解压后将 **ScreenSwitch.app** 放入“应用程序”文件夹即可。关屏和恢复功能已合并，无需另装恢复应用。
 
-[Releases](https://github.com/haroldvandy2013/ScreenSwitch/releases/latest) 中现有的 **v0.1.0 是旧版双应用包**，尚不包含本次合并及语言切换功能。更新到单应用版并确认正常退出恢复后，可以删除旧的“恢复内置屏幕.app”。
+从旧版 v0.1.0 升级时，先正常退出旧程序，再替换主应用。确认新版正常退出能够恢复内屏后，可以删除旧的“恢复内置屏幕.app”。
 
-需要 **macOS 13 或以上**，开发环境为 Apple Silicon M3 Max / macOS 15.8.1，但不代表已验证此机型关屏可靠。
+下载包仅适用于 **Apple Silicon Mac，macOS 13 或以上**。开发环境为 M3 Max / macOS 15.8.1，但不代表已验证此机型关屏可靠。
 
 应用未经 Apple 公证。如果系统阻止打开，可尝试右键选择“打开”，或在系统设置中选择“仍要打开”；**不要关闭系统安全保护**。
 
