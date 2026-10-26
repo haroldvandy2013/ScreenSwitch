@@ -10,7 +10,7 @@ The app has a small control window, a Dock entry, and a menu-bar shortcut. **The
 
 ## Download and install
 
-Download **`ScreenSwitch-v1.1.0-macos-arm64.zip`** from [Releases](https://github.com/haroldvandy2013/ScreenSwitch/releases). The initial release contains:
+Download **`ScreenSwitch-v0.1.0-macos-arm64.zip`** from [Releases](https://github.com/haroldvandy2013/ScreenSwitch/releases). The initial release contains:
 
 | File | Purpose |
 | --- | --- |

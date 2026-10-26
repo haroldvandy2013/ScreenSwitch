@@ -8,7 +8,7 @@
 
 ## 启动和使用
 
-从 [Releases](https://github.com/haroldvandy2013/ScreenSwitch/releases) 下载 `ScreenSwitch-v1.1.0-macos-arm64.zip` 并解压，包含主程序、应急恢复程序和中英文使用说明。发布包仅支持 Apple Silicon（arm64），未公证；**界面目前为中文，英文版仅指文档**。`SHA256SUMS.txt` 提供下载文件校验值：
+从 [Releases](https://github.com/haroldvandy2013/ScreenSwitch/releases) 下载 `ScreenSwitch-v0.1.0-macos-arm64.zip` 并解压，包含主程序、应急恢复程序和中英文使用说明。发布包仅支持 Apple Silicon（arm64），未公证；**界面目前为中文，英文版仅指文档**。`SHA256SUMS.txt` 提供下载文件校验值：
 
 ```bash
 shasum -a 256 -c SHA256SUMS.txt
