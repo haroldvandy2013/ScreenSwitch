@@ -6,6 +6,10 @@ Keep your MacBook open and work on an external monitor while continuing to use t
 
 A simple switch attempts to disable the built-in display's desktop output—not just dim it or cover it with a black window. A control window and Dock entry keep the app accessible even when the menu bar is full. **The app UI is currently in Simplified Chinese.**
 
+<img src="docs/images/screenswitch.png" alt="ScreenSwitch control window with the disable action unavailable because no external monitor is connected" width="440">
+
+*Actual app screenshot: disabling the built-in display is unavailable without an external monitor.*
+
 > **Experimental:** ScreenSwitch uses an unsupported macOS interface. Compatibility and recovery are not guaranteed. Build, UI, and simulated checks have passed, but **actual display disabling and restoration have not been hardware-tested**. Read the recovery steps before first use.
 
 ## Download and install
