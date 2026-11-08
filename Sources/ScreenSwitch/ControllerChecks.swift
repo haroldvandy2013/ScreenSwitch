@@ -11,11 +11,17 @@ final class SimulatedDisplay: DisplayBackend {
     var rejectRestore = false
     var rejectDisable = false
     var externalAsleep = false
+    var savedRestoreCalls = 0
+    var savedRestoreSucceeds = false
+    var rejectSnapshot = false
+    var snapshotCalls = 0
     var calls: [Bool] = []
 
     func snapshot() throws -> DisplaySnapshot {
-        DisplaySnapshot(
-            onlineIDs: builtinActive ? [1] : [],
+        snapshotCalls += 1
+        if rejectSnapshot { throw DisplayFailure.enumeration(1001) }
+        return DisplaySnapshot(
+            onlineIDs: (builtinActive ? [1] : []) + Array(10..<(10 + UInt32(externalCount))),
             builtinID: builtinKnown ? 1 : nil,
             builtinActive: builtinActive,
             availableExternalIDs: Array(10..<(10 + UInt32(externalCount))),
@@ -32,6 +38,11 @@ final class SimulatedDisplay: DisplayBackend {
     func markRecovered() { recoveryPending = false }
 
     func diagnosticText() throws -> String { "Simulated displays — no hardware operations" }
+
+    func restoreSavedConfiguration() {
+        savedRestoreCalls += 1
+        if savedRestoreSucceeds { builtinActive = true }
+    }
 
     func setBuiltinEnabled(_ enabled: Bool) throws {
         calls.append(enabled)
@@ -184,6 +195,18 @@ func runControllerChecks() {
     }
     do {
         let backend = SimulatedDisplay()
+        backend.externalCount = 2
+        let control = DisplayController(driver: backend)
+        control.disable()
+        control.handleDisplayChange(10, flags: .removeFlag)
+        expect(backend.calls == [false], "Removal of one external preserves off state while another remains")
+        expect(control.snapshot?.availableExternalIDs == [11], "Remaining external stays available")
+        control.handleDisplayChange(11, flags: .removeFlag)
+        control.refresh()
+        expect(backend.calls == [false, true], "Removal of the last external requests restoration")
+    }
+    do {
+        let backend = SimulatedDisplay()
         backend.builtinActive = false
         let control = DisplayController(driver: backend)
         control.recoverOnReopen()
@@ -316,6 +339,139 @@ func runControllerChecks() {
             expect(error.localizedDescription != english, "Every display error has both translations")
             AppSettings.shared.language = .english
         }
+    }
+    do {
+        let backend = SimulatedDisplay()
+        let control = DisplayController(driver: backend)
+        control.disable()
+        control.handleDisplayChange(10, flags: .removeFlag)
+        control.refresh()
+        expect(backend.calls == [false, true], "Removal callback overrides stale online display enumeration")
+        expect(control.snapshot?.availableExternalIDs.isEmpty == true, "Removed external does not count as available")
+        control.handleDisplayChange(10, flags: .addFlag)
+        expect(control.snapshot?.availableExternalIDs == [10], "Reconnection clears the removal override")
+        expect(backend.calls == [false, true], "Reconnection does not re-disable the panel")
+    }
+    do {
+        let backend = SimulatedDisplay()
+        backend.builtinActive = false
+        backend.externalCount = 0
+        let control = DisplayController(driver: backend)
+        control.refresh()
+        control.refresh()
+        expect(backend.calls == [true], "No external and inactive internal restores even without a saved marker")
+        expect(!control.recoveryPending, "Unmarked headless recovery is confirmed")
+    }
+    do {
+        let backend = SimulatedDisplay()
+        let control = DisplayController(driver: backend)
+        control.disable()
+        backend.rejectRestore = true
+        backend.savedRestoreSucceeds = true
+        backend.externalCount = 0
+        control.refresh()
+        expect(backend.savedRestoreCalls == 1, "Failed enable with no external requests saved configuration recovery")
+        expect(control.recoveryPending, "Void fallback is not success until active state is re-read")
+        control.refresh()
+        expect(!control.recoveryPending && backend.builtinActive, "Fallback success verified through built-in active state")
+        control.restore()
+        expect(!control.recoveryPending && !control.busy, "Restoring an already active panel does not start another recovery")
+    }
+    do {
+        let backend = SimulatedDisplay()
+        let control = DisplayController(driver: backend)
+        control.disable()
+        backend.rejectRestore = true
+        control.restore()
+        expect(backend.savedRestoreCalls == 0, "Failed manual restore while external remains does not reset display layout")
+    }
+    do {
+        var clock = Date()
+        let backend = SimulatedDisplay()
+        let control = DisplayController(driver: backend, now: { clock })
+        control.disable()
+        backend.rejectRestore = true
+        backend.externalCount = 0
+        control.refresh()
+        expect(control.recoveryPending && backend.savedRestoreCalls == 1, "No-op fallback preserves recovery intent")
+        clock.addTimeInterval(1)
+        control.refresh()
+        expect(backend.savedRestoreCalls == 1, "Saved-configuration fallback is rate limited")
+        clock.addTimeInterval(5)
+        control.refresh()
+        expect(backend.savedRestoreCalls == 2 && control.recoveryPending, "Unconfirmed fallback keeps retrying without false success")
+    }
+    do {
+        let backend = SimulatedDisplay()
+        backend.rejectRestore = true
+        let control = DisplayController(driver: backend)
+        control.restore()
+        expect(backend.calls.isEmpty, "Restore on an active panel must not call the private API")
+        expect(!control.recoveryPending && !control.busy && control.canDisable, "No-op restore leaves the app usable")
+        backend.recoveryPending = true
+        control.refresh(readOnly: true)
+        expect(!backend.recoveryPending && !control.busy, "Refresh clears a stale recovery marker when the internal panel is active")
+        expect(backend.calls.isEmpty, "Clearing stale intent does not require a successful enable transaction")
+    }
+    do {
+        let backend = SimulatedDisplay()
+        backend.builtinActive = false
+        backend.recoveryPending = true
+        backend.rejectRestore = true
+        let control = DisplayController(driver: backend)
+        var restored = 0
+        control.onRestored = { restored += 1 }
+        control.refresh()
+        expect(control.busy && control.recoveryPending, "Failed genuine restore keeps recovery running")
+        let calls = backend.calls
+        backend.builtinActive = true
+        control.refresh(readOnly: true)
+        expect(!control.busy && !control.recoveryPending && control.canDisable, "OS-restored active state ends failed recovery and releases controls")
+        expect(backend.calls == calls && restored == 1, "Refresh confirms actual recovery without issuing or requiring another transaction")
+        control.refresh()
+        expect(backend.calls == calls && restored == 1, "Confirmed recovery does not loop")
+    }
+    do {
+        let backend = SimulatedDisplay()
+        backend.builtinActive = false
+        backend.externalCount = 0
+        let control = DisplayController(driver: backend)
+        control.refresh(readOnly: true)
+        expect(backend.snapshotCalls == 1 && control.snapshot?.builtinActive == false, "Read-only refresh obtains a new snapshot")
+        expect(backend.calls.isEmpty && backend.savedRestoreCalls == 0, "Manual refresh must not call either display-configuration API")
+        control.refresh()
+        control.refresh()
+        expect(backend.calls == [true] && !control.recoveryPending, "Watchdog still performs mandatory last-display recovery")
+    }
+    do {
+        let backend = SimulatedDisplay()
+        backend.builtinActive = false
+        backend.recoveryPending = true
+        backend.rejectSnapshot = true
+        let control = DisplayController(driver: backend)
+        control.refresh(readOnly: true)
+        expect(control.snapshot == nil && control.recoveryPending, "Failed refresh does not invent display state or clear recovery")
+        expect(backend.calls.isEmpty, "Failed read-only enumeration does not initiate transactions")
+    }
+    do {
+        var clock = Date()
+        let backend = SimulatedDisplay()
+        backend.delayDisable = true
+        backend.rejectRestore = true
+        let control = DisplayController(driver: backend, now: { clock })
+        control.disable()
+        control.refresh(readOnly: true)
+        expect(control.busy && control.recoveryPending, "Refresh must not clear a disable that may still settle")
+        control.restore()
+        expect(backend.calls == [false, true] && control.recoveryPending, "An active but unsettled disable still receives rollback")
+        clock.addTimeInterval(1)
+        backend.builtinActive = false
+        control.refresh(readOnly: true)
+        expect(control.recoveryPending, "Late disable after failed rollback is not mistaken for recovery")
+        clock.addTimeInterval(3)
+        backend.builtinActive = true
+        control.refresh(readOnly: true)
+        expect(!control.recoveryPending && !control.busy, "Observed active state after the settling deadline clears a failed rollback")
     }
     print("PASS: \(count) controller lifecycle checks with simulated displays; no real driver instantiated.")
 }

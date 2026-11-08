@@ -7,10 +7,17 @@ enum AppLanguage: String, CaseIterable {
 
 final class AppSettings {
     static let shared = AppSettings()
+    #if DEBUG
+    static var checkDefaults: UserDefaults?
+    #endif
     private let defaults: UserDefaults
 
-    init(defaults: UserDefaults = UserDefaults(suiteName: "local.ScreenSwitch.settings")!) {
-        self.defaults = defaults
+    init(defaults: UserDefaults? = nil) {
+        #if DEBUG
+        self.defaults = defaults ?? Self.checkDefaults ?? UserDefaults(suiteName: "local.ScreenSwitch.settings")!
+        #else
+        self.defaults = defaults ?? UserDefaults(suiteName: "local.ScreenSwitch.settings")!
+        #endif
     }
 
     var language: AppLanguage {

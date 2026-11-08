@@ -2,20 +2,30 @@ import AppKit
 import Darwin
 
 let arguments = Set(CommandLine.arguments.dropFirst())
-var allowed: Set<String> = ["--diagnose", "--restore"]
+var allowed: Set<String> = ["--diagnose", "--restore", "--version"]
 #if DEBUG
 allowed.insert("--check-controller")
 allowed.insert("--check-ui")
 #endif
 if !arguments.isSubset(of: allowed) || arguments.count > 1 {
-    fputs(L("用法：ScreenSwitch [--diagnose | --restore]\n没有命令行关屏选项；请在窗口或菜单栏手动操作。\n",
-            "Usage: ScreenSwitch [--diagnose | --restore]\nNo command-line disable option. Use the window or menu bar manually.\n"), stderr)
+    fputs(L("用法：ScreenSwitch [--diagnose | --restore | --version]\n没有命令行关屏选项；请在窗口或菜单栏手动操作。\n",
+            "Usage: ScreenSwitch [--diagnose | --restore | --version]\nNo command-line disable option. Use the window or menu bar manually.\n"), stderr)
     exit(2)
 }
 
+if arguments.contains("--version") {
+    print("ScreenSwitch · \(AppVersion.label())")
+    exit(0)
+}
+
 #if DEBUG
+let checkSuite = "local.ScreenSwitch.checks.runtime.\(UUID().uuidString)"
+if arguments.contains("--check-controller") || arguments.contains("--check-ui") {
+    AppSettings.checkDefaults = UserDefaults(suiteName: checkSuite)!
+}
 if arguments.contains("--check-controller") {
     MainActor.assumeIsolated { runControllerChecks() }
+    AppSettings.checkDefaults?.removePersistentDomain(forName: checkSuite)
     exit(0)
 }
 if arguments.contains("--check-ui") {
@@ -27,6 +37,7 @@ if arguments.contains("--check-ui") {
         let delegate = AppDelegate(driver: backend)
         delegate.checkControlWindow()
     }
+    AppSettings.checkDefaults?.removePersistentDomain(forName: checkSuite)
     exit(0)
 }
 #endif
@@ -42,29 +53,24 @@ if arguments.contains("--diagnose") {
 }
 
 if arguments.contains("--restore") {
-    let driver = DisplayDriver()
-    var restoreError: Error = DisplayFailure.notRestored
-    if !driver.markRecoveryPending() {
-        fputs(L("无法保存恢复记录；仍将尝试开启内置屏幕。\n", "Cannot save recovery state; still attempting to enable the built-in display.\n"), stderr)
-    }
-    for _ in 0..<5 {
-        do {
-            try driver.setBuiltinEnabled(true)
+    MainActor.assumeIsolated {
+        let controller = DisplayController(driver: DisplayDriver())
+        controller.onError = { error in
+            fputs("\(error.localizedDescription)\n", stderr)
+        }
+        controller.refresh()
+        controller.restore()
+        for _ in 0..<6 {
             Thread.sleep(forTimeInterval: 1)
-            if try driver.snapshot().builtinActive {
-                driver.markRecovered()
+            controller.refresh()
+            if !controller.recoveryPending && controller.snapshot?.builtinActive == true {
                 print(L("内置屏幕已恢复。", "Built-in display restored."))
                 exit(0)
             }
-            restoreError = DisplayFailure.notRestored
-        } catch {
-            restoreError = error
-            fputs("\(L("恢复重试", "Recovery retry")): \(error.localizedDescription)\n", stderr)
-            Thread.sleep(forTimeInterval: 1)
         }
+        fputs("\(controller.message)\n", stderr)
+        exit(1)
     }
-    fputs("\(restoreError.localizedDescription)\n", stderr)
-    exit(1)
 }
 
 let app = NSApplication.shared

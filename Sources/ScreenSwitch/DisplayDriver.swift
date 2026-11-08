@@ -86,6 +86,7 @@ protocol DisplayBackend: AnyObject {
     func markRecovered()
     func setBuiltinEnabled(_ enabled: Bool) throws
     func diagnosticText() throws -> String
+    func restoreSavedConfiguration()
 }
 
 final class DisplayDriver: DisplayBackend {
@@ -97,6 +98,7 @@ final class DisplayDriver: DisplayBackend {
     private let preferences = UserDefaults(suiteName: "local.ScreenSwitch.recovery")!
     private let pendingKey = "needsRecovery"
     private let builtinKey = "builtinDisplayID"
+    private var verifiedBuiltin: CGDirectDisplayID?
 
     var apiAvailable: Bool { configureEnabled != nil }
     var recoveryPending: Bool { preferences.bool(forKey: pendingKey) }
@@ -128,6 +130,13 @@ final class DisplayDriver: DisplayBackend {
         guard result == .success else { throw DisplayFailure.enumeration(result.rawValue) }
         ids = Array(ids.prefix(Int(count)))
         var builtin = ids.first { CGDisplayIsBuiltin($0) != 0 }
+        if let builtin { verifiedBuiltin = builtin }
+        if builtin == nil, let verifiedBuiltin,
+           !ids.contains(verifiedBuiltin) || CGDisplayIsBuiltin(verifiedBuiltin) != 0 {
+            // The same driver observed this internal panel before disable. After
+            // unplug, querying an offline panel can lose its built-in flag.
+            builtin = verifiedBuiltin
+        }
         // Disabled panels may disappear from the online list. Never trust a
         // remembered ID without checking that CoreGraphics still calls it built-in.
         if builtin == nil,
@@ -135,6 +144,7 @@ final class DisplayDriver: DisplayBackend {
             let remembered = value.uint32Value
             if remembered != kCGNullDirectDisplay, CGDisplayIsBuiltin(remembered) != 0 {
                 builtin = remembered
+                verifiedBuiltin = remembered
             }
         }
         if let builtin, preferences.object(forKey: builtinKey) as? NSNumber != NSNumber(value: builtin) {
@@ -158,6 +168,10 @@ final class DisplayDriver: DisplayBackend {
                 CGDisplayIsAsleep($0) != 0
             }
         )
+    }
+
+    func restoreSavedConfiguration() {
+        CGRestorePermanentDisplayConfiguration()
     }
 
     @discardableResult

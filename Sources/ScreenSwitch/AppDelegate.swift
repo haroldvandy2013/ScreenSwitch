@@ -12,7 +12,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var alertVisible = false
     private var controlWindow: NSWindow?
     private var windowStatus: NSTextField?
+    private var windowVersion: NSTextField?
     private var windowToggle: NSButton?
+    private var windowRefresh: NSButton?
+    private var windowContentStack: NSStackView?
     private var languagePopup: NSPopUpButton?
     private var displaySleepCheckbox: NSButton?
     private var displaySleepMenuItem: NSMenuItem?
@@ -60,9 +63,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         show.target = self
         toggleItem = menu.addItem(withTitle: L("关闭内置屏幕", "Turn off built-in display"), action: #selector(toggle), keyEquivalent: "")
         toggleItem.target = self
-        let restore = menu.addItem(withTitle: L("恢复内置屏幕", "Restore built-in display"), action: #selector(restore), keyEquivalent: "r")
-        restore.keyEquivalentModifierMask = [.command, .option]
-        restore.target = self
+        let refresh = menu.addItem(withTitle: L("刷新", "Refresh"), action: #selector(refreshStatus), keyEquivalent: "r")
+        refresh.target = self
         menu.addItem(.separator())
         displaySleepMenuItem = menu.addItem(
             withTitle: L("熄屏时自动恢复内置屏幕", "Restore built-in display on screen sleep"),
@@ -126,7 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showControlWindow() {
         if controlWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 520, height: 400),
+                contentRect: NSRect(x: 0, y: 0, width: 520, height: 320),
                 styleMask: [.titled, .closable, .miniaturizable],
                 backing: .buffered, defer: false
             )
@@ -152,10 +154,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             toggle.controlSize = .large
             toggle.setAccessibilityIdentifier("displayToggle")
             windowToggle = toggle
-            let restore = NSButton(title: "恢复内置屏幕", target: self, action: #selector(self.restore))
-            localizedWindowText.append { restore.title = L("恢复内置屏幕", "Restore built-in display") }
-            restore.bezelStyle = .rounded
-            let buttons = NSStackView(views: [toggle, restore])
+            let refresh = NSButton(title: "", target: self, action: #selector(refreshStatus))
+            localizedWindowText.append { refresh.title = L("刷新", "Refresh") }
+            refresh.bezelStyle = .rounded
+            refresh.setAccessibilityIdentifier("refreshDisplays")
+            windowRefresh = refresh
+            let buttons = NSStackView(views: [toggle, refresh])
             buttons.orientation = .horizontal
             buttons.spacing = 12
             let help = NSButton(title: "使用与安全说明", target: self, action: #selector(showHelp))
@@ -188,18 +192,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
             displaySleepCheckbox = checkbox
-            let stack = NSStackView(views: [title, status, detail, buttons, footer, languages, checkbox])
+            let version = NSTextField(labelWithString: AppVersion.label())
+            version.textColor = .secondaryLabelColor
+            version.font = .systemFont(ofSize: 12)
+            version.setAccessibilityIdentifier("appVersion")
+            windowVersion = version
+            let header = NSView()
+            header.translatesAutoresizingMaskIntoConstraints = false
+            title.translatesAutoresizingMaskIntoConstraints = false
+            version.translatesAutoresizingMaskIntoConstraints = false
+            header.addSubview(title)
+            header.addSubview(version)
+            NSLayoutConstraint.activate([
+                title.leadingAnchor.constraint(equalTo: header.leadingAnchor),
+                title.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+                version.trailingAnchor.constraint(equalTo: header.trailingAnchor),
+                version.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+                title.trailingAnchor.constraint(lessThanOrEqualTo: version.leadingAnchor, constant: -12),
+                header.heightAnchor.constraint(equalTo: title.heightAnchor)
+            ])
+            let stack = NSStackView(views: [header, status, detail, buttons, footer, languages, checkbox])
             stack.orientation = .vertical
             stack.alignment = .leading
-            stack.spacing = 18
+            stack.spacing = 12
             stack.translatesAutoresizingMaskIntoConstraints = false
+            windowContentStack = stack
             if let content = window.contentView {
                 content.addSubview(stack)
                 NSLayoutConstraint.activate([
-                    stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
-                    stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
-                    stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
-                    stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -24),
+                    stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+                    stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+                    stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
+                    header.widthAnchor.constraint(equalTo: stack.widthAnchor),
                     status.widthAnchor.constraint(equalTo: stack.widthAnchor),
                     detail.widthAnchor.constraint(equalTo: stack.widthAnchor)
                 ])
@@ -230,15 +254,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateMenu() {
         descriptionItem.title = controller.message
-        let needsRestore = controller.recoveryPending || controller.snapshot?.builtinActive == false
+        let needsRestore = controller.snapshot.map { !$0.builtinActive && ($0.builtinID != nil || controller.recoveryPending) }
+            ?? controller.recoveryPending
         toggleItem.title = needsRestore
             ? L("恢复内置屏幕", "Restore built-in display")
             : L("关闭内置屏幕", "Turn off built-in display")
         toggleItem.state = controller.recoveryPending ? .on : .off
-        toggleItem.isEnabled = !controller.busy && (needsRestore ? controller.apiAvailable : controller.canDisable)
+        toggleItem.isEnabled = !controller.busy && (needsRestore || controller.canDisable)
         windowStatus?.stringValue = controller.message
         windowToggle?.title = toggleItem.title
         windowToggle?.isEnabled = toggleItem.isEnabled
+        toggleItem.keyEquivalent = needsRestore ? "r" : ""
+        toggleItem.keyEquivalentModifierMask = [.command, .option]
         let restoreOnSleep = AppSettings.shared.restoreOnDisplaySleep
         displaySleepCheckbox?.state = restoreOnSleep ? .on : .off
         displaySleepMenuItem?.state = restoreOnSleep ? .on : .off
@@ -247,10 +274,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             accessibilityDescription: controller.message
         )
         statusItem.button?.toolTip = controller.message
+        if let window = controlWindow, let stack = windowContentStack {
+            window.contentView?.layoutSubtreeIfNeeded()
+            let height = ceil(stack.fittingSize.height + 40)
+            if abs((window.contentView?.bounds.height ?? 0) - height) > 1 {
+                window.setContentSize(NSSize(width: 520, height: height))
+            }
+        }
     }
 
     @objc private func toggle() {
-        if controller.recoveryPending || controller.snapshot?.builtinActive == false {
+        controller.refresh(readOnly: true)
+        if controller.snapshot?.builtinActive == false {
             controller.restore()
         } else {
             let alert = NSAlert()
@@ -275,7 +310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func restore() { controller.restore() }
+    @objc private func refreshStatus() { controller.refresh(readOnly: true) }
     @objc private func quit() { NSApp.terminate(nil) }
 
     @objc private func showHelp() {
@@ -383,6 +418,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             precondition(windowToggle?.isEnabled == false, "No external must prevent disabling")
         }
         precondition(windowToggle?.title == "关闭内置屏幕", "Initial UI must be Chinese")
+        precondition(windowVersion?.stringValue == AppVersion.label(), "Window must show the current bundle version")
+        precondition(windowVersion?.stringValue.hasPrefix("version ") == true, "Version label must use the compact format")
         precondition(displaySleepCheckbox?.state == .off, "Optional restoration must start unchecked")
         precondition(displaySleepMenuItem?.state == .off, "Menu must reflect unchecked preference")
         displaySleepCheckbox?.performClick(nil)
@@ -396,6 +433,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         languagePopup?.selectItem(at: 1)
         selectWindowLanguage(languagePopup!)
         precondition(windowToggle?.title == "Turn off built-in display", "Window language selector must translate actions")
+        precondition(windowVersion?.stringValue == AppVersion.label(), "Compact version format stays unchanged in English")
+        precondition(windowRefresh?.title == "Refresh", "Refresh action must translate")
         precondition(controlWindow?.title == "ScreenSwitch · Built-in display", "Window title must translate")
         precondition(controller.message == "Connect and wake an external monitor first", "Status must translate immediately")
         precondition(windowToggle?.isEnabled == false, "Switching language must not bypass display safety")
@@ -411,10 +450,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     let frame = content.convert(child.bounds, from: child)
                     precondition(frame.maxX <= content.bounds.maxX + 1, "English controls must not overflow the window")
+                    precondition(frame.maxY <= content.bounds.maxY + 1, "Controls must stay below the top of the window")
                     precondition(frame.minX >= -1 && frame.minY >= -1, "Controls must stay inside the window")
                 }
             }
             checkLayout(content)
+            if let version = windowVersion, let stack = windowContentStack {
+                let versionFrame = content.convert(version.alignmentRect(forFrame: version.bounds), from: version)
+                let stackFrame = content.convert(stack.bounds, from: stack)
+                precondition(abs(versionFrame.maxX - (content.bounds.maxX - 20)) <= 1, "Version must align to the top-right margin")
+                precondition(versionFrame.midY > content.bounds.maxY - 45, "Version must stay in the header")
+                precondition(abs(stackFrame.minY - 20) <= 1, "Only the intended bottom margin may remain")
+                precondition(content.bounds.height < 360, "Normal window must be compact")
+            }
         }
         precondition(AppSettings().language == .english, "Language must persist across settings instances")
         let languageItem = NSMenuItem()
@@ -424,10 +472,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         precondition(languagePopup?.indexOfSelectedItem == 0, "Window selector must follow menu language")
         if let backend = driver as? SimulatedDisplay {
             backend.externalCount = 1
-            controller.refresh()
+            windowRefresh?.performClick(nil)
             precondition(windowToggle?.isEnabled == true, "External monitor enables the manual action")
+            precondition(backend.calls.isEmpty, "Refresh only observes display state")
+            precondition(statusItem.menu?.items.contains { $0.title == "恢复内置屏幕" } == false, "On state must not expose a restore action")
+            backend.builtinActive = false
+            windowRefresh?.performClick(nil)
+            precondition(windowToggle?.title == "恢复内置屏幕", "Refresh must detect an inactive panel without a recovery marker")
+            precondition(backend.calls.isEmpty, "Refreshing an inactive panel must not send a transaction")
+            windowToggle?.performClick(nil)
+            precondition(backend.calls == [true], "Off-state button must restore")
+            precondition(windowToggle?.title == "关闭内置屏幕", "Successful restore returns to the on-state action")
+            backend.calls.removeAll()
             controller.disable()
             precondition(windowToggle?.title == "恢复内置屏幕", "Off state must offer restoration")
+            precondition(statusItem.menu?.items.filter { $0.title == "恢复内置屏幕" }.count == 1, "Off state has exactly one restore menu action")
+            precondition(windowRefresh?.isEnabled == true, "Refresh remains available while the panel is off")
             languagePopup?.selectItem(at: 1)
             selectWindowLanguage(languagePopup!)
             precondition(windowToggle?.title == "Restore built-in display", "Off-state action translates")
@@ -435,10 +495,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: true)
             precondition(backend.calls == [false, true], "Reopening the running single app must restore the panel")
             precondition(windowToggle?.title == "Turn off built-in display", "Restored state reflects in the window")
+            precondition(statusItem.menu?.items.contains { $0.title == "Restore built-in display" } == false, "On state must not show a restore action")
             precondition(applicationShouldTerminate(NSApp) == .terminateNow, "Confirmed restored panel allows normal quit")
             backend.externalCount = 0
             controller.refresh()
             setLanguage(.chinese)
+        }
+        controlWindow?.contentView?.layoutSubtreeIfNeeded()
+        if let content = controlWindow?.contentView, let stack = windowContentStack {
+            let frame = content.convert(stack.bounds, from: stack)
+            precondition(abs(frame.minY - 20) <= 1, "Chinese layout must also fit without bottom whitespace")
         }
         controlWindow?.close()
         precondition(!applicationShouldTerminateAfterLastWindowClosed(NSApp), "Closing window must not stop safety checks")

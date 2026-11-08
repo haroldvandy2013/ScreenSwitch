@@ -6,15 +6,17 @@ Keep your MacBook open and work on an external monitor while continuing to use t
 
 A simple switch attempts to disable the built-in display's desktop output—not just dim it or cover it with a black window. A control window and Dock entry keep the app accessible even when the menu bar is full. **The UI supports Simplified Chinese and English, defaulting to Chinese.**
 
-<img src="docs/images/screenswitch.png" alt="ScreenSwitch control window with built-in display controls and a Chinese/English language selector" width="520">
+<img src="docs/images/screenswitch.png" alt="ScreenSwitch v0.2.2 with a state-aware display action, Refresh, a top-right version label, and language selection" width="520">
 
-*Actual app screenshot: disable and restore controls in one app, with live language switching.*
+*Actual v0.2.2 screenshot: a state-aware display action, read-only Refresh, and live language switching.*
 
-> **Experimental:** ScreenSwitch uses an unsupported macOS interface. Compatibility and recovery are not guaranteed. Build, UI, and simulated checks have passed, but **actual display disabling and restoration have not been hardware-tested**. Read the recovery steps before first use.
+> **Experimental:** ScreenSwitch uses an unsupported macOS interface. Compatibility and recovery are not guaranteed. Build, UI, and simulated checks have passed, but this does not establish compatibility with every machine. Read the recovery steps before first use.
 
 ## Download and install
 
-Download **ScreenSwitch-v0.2.0-macos-arm64.zip** from [Releases](https://github.com/haroldvandy2013/ScreenSwitch/releases/latest). Extract it and copy **ScreenSwitch.app** to your Applications folder. Disabling and recovery are integrated into this single app; no separate restore app is needed.
+Download **ScreenSwitch-v0.2.2-macos-arm64.zip** from [Releases](https://github.com/haroldvandy2013/ScreenSwitch/releases/latest). Extract it and copy **ScreenSwitch.app** to your Applications folder. Disabling and recovery are integrated into this single app; no separate restore app is needed.
+
+Before updating, confirm that the built-in display is active, then quit the old version and replace it. Do not force-quit a stuck old version while the built-in display is off.
 
 When upgrading from v0.1.0, quit the old app normally before replacing it. Once you confirm that the new app restores the panel on normal quit, you may remove the old `恢复内置屏幕.app`.
 
@@ -30,12 +32,15 @@ The app is **not Apple-notarized**. If launch is blocked, try Finder's right-cli
 
 Use **语言 / Language** in the window or menu to select “简体中文” or “English”. Changes apply immediately and are remembered. A fresh installation defaults to Chinese.
 
+The version appears in the top-right corner. **Refresh** only rechecks display state, without disabling or restoring a display. The single action reads “Turn off built-in display” while the panel is on, and “Restore built-in display” while it is off. An already active panel does not receive redundant restore transactions.
+
 **Optional: Restore built-in display on screen sleep.** Unchecked by default. When enabled, display sleep triggers an attempt to restore the panel disabled by this app; the choice is remembered. This means actual display sleep, not just locking the screen or starting a screensaver. It does not reboot the Mac or send wake commands; screen illumination depends on macOS. Waking never automatically disables the panel again.
 
 The app attempts restoration when the last usable external display disconnects, before sleep, and on normal quit. Reconnecting a monitor or waking the Mac **never automatically disables the panel**.
 
 System-sleep, unplug and quit recovery remain enabled regardless of the screen-sleep option.
 
+Removal of the last external monitor requests immediate restoration, with continued active-state checks. If normal recovery fails with no external monitor available, the app also requests macOS's saved display configuration. **This may reset display arrangements.** Restoration is still not guaranteed on every machine or after driver failures.
 Closing the window keeps the app running. Clicking its Dock icon or reopening the app first attempts restoration if the panel is inactive or recovery is pending. Quit using **恢复屏幕并退出** (“Restore and quit”), rather than force-quitting.
 
 ## If the screen goes black
