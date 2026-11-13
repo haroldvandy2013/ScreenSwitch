@@ -210,8 +210,10 @@ func runControllerChecks() {
         backend.builtinActive = false
         let control = DisplayController(driver: backend)
         control.recoverOnReopen()
-        expect(backend.calls == [true], "Opening the app can recover even without a saved marker")
-        expect(!control.recoveryPending, "Unmarked inactive panel is confirmed restored")
+        expect(backend.calls.isEmpty && !control.recoveryPending, "Reopening an unmarked inactive panel must not infer a disable")
+        control.restore()
+        expect(backend.calls == [true], "Explicit manual recovery remains available without a saved marker")
+        expect(!control.recoveryPending, "Manual recovery of an unmarked panel is confirmed")
         control.recoverOnReopen()
         expect(backend.calls == [true], "Reopening with an active panel does not change display configuration")
     }
@@ -359,8 +361,8 @@ func runControllerChecks() {
         let control = DisplayController(driver: backend)
         control.refresh()
         control.refresh()
-        expect(backend.calls == [true], "No external and inactive internal restores even without a saved marker")
-        expect(!control.recoveryPending, "Unmarked headless recovery is confirmed")
+        expect(backend.calls.isEmpty && backend.savedRestoreCalls == 0, "No external and inactive internal without a marker must not initiate recovery")
+        expect(!control.recoveryPending, "Inactivity alone must not create recovery intent")
     }
     do {
         let backend = SimulatedDisplay()
@@ -439,9 +441,11 @@ func runControllerChecks() {
         control.refresh(readOnly: true)
         expect(backend.snapshotCalls == 1 && control.snapshot?.builtinActive == false, "Read-only refresh obtains a new snapshot")
         expect(backend.calls.isEmpty && backend.savedRestoreCalls == 0, "Manual refresh must not call either display-configuration API")
-        control.refresh()
-        control.refresh()
-        expect(backend.calls == [true] && !control.recoveryPending, "Watchdog still performs mandatory last-display recovery")
+        backend.recoveryPending = true
+        let recoveryControl = DisplayController(driver: backend)
+        recoveryControl.refresh()
+        recoveryControl.refresh()
+        expect(backend.calls == [true] && !recoveryControl.recoveryPending, "A recorded disable still receives mandatory last-display recovery")
     }
     do {
         let backend = SimulatedDisplay()
@@ -472,6 +476,47 @@ func runControllerChecks() {
         backend.builtinActive = true
         control.refresh(readOnly: true)
         expect(!control.recoveryPending && !control.busy, "Observed active state after the settling deadline clears a failed rollback")
+    }
+    for optIn in [false, true] {
+        for builtinKnown in [false, true] {
+            let suite = "local.ScreenSwitch.idleSleepChecks.\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suite)!
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let settings = AppSettings(defaults: defaults)
+            settings.restoreOnDisplaySleep = optIn
+            let backend = SimulatedDisplay()
+            backend.externalCount = 0
+            backend.builtinActive = false
+            backend.builtinKnown = builtinKnown
+            backend.rejectRestore = true
+            var clock = Date()
+            let control = DisplayController(driver: backend, settings: settings, now: { clock })
+            var errors: [Error] = []
+            control.onError = { errors.append($0) }
+            control.start()
+            defer { control.stop() }
+            expect(backend.calls.isEmpty && !control.recoveryPending, "Starting during normal sleep must not fabricate a disable record")
+            for _ in 0..<3 {
+                control.handleDisplaysSleep()
+                control.handleSleep()
+                clock.addTimeInterval(8 * 60 * 60)
+                control.refresh()
+                control.handleWake()
+                control.handleDisplaysWake()
+                control.handleDisplayChange(1, flags: .setModeFlag)
+                control.recoverOnReopen()
+                control.refresh()
+            }
+            expect(backend.calls.isEmpty && backend.savedRestoreCalls == 0, "Unmarked sleep, wake, callbacks and reopen must never submit recovery transactions, regardless of opt-in")
+            expect(errors.isEmpty && !control.busy && !control.recoveryPending, "Ordinary overnight sleep must not produce recovery alerts or markers")
+            backend.builtinKnown = true
+            backend.builtinActive = true
+            control.refresh()
+            expect(backend.calls.isEmpty && !control.canDisable, "Waking without an external monitor stays idle and cannot disable")
+            backend.externalCount = 1
+            control.refresh()
+            expect(control.canDisable && backend.calls.isEmpty, "A later external connection still enables only manual disabling")
+        }
     }
     print("PASS: \(count) controller lifecycle checks with simulated displays; no real driver instantiated.")
 }

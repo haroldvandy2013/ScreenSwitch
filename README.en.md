@@ -34,6 +34,8 @@ Use **语言 / Language** in the window or menu to select “简体中文” or 
 
 The version appears in the top-right corner. **Refresh** only rechecks display state, without disabling or restoring a display. The single action reads “Turn off built-in display” while the panel is on, and “Restore built-in display” while it is off. An already active panel does not receive redundant restore transactions.
 
+The source and local fix are **v0.2.3** (the download remains v0.2.2): automatic recovery requires an existing recovery record. Temporary inactivity during normal display sleep, system sleep or wake no longer counts as an app-issued disable.
+
 **Optional: Restore built-in display on screen sleep.** Unchecked by default. When enabled, display sleep triggers an attempt to restore the panel disabled by this app; the choice is remembered. This means actual display sleep, not just locking the screen or starting a screensaver. It does not reboot the Mac or send wake commands; screen illumination depends on macOS. Waking never automatically disables the panel again.
 
 The app attempts restoration when the last usable external display disconnects, before sleep, and on normal quit. Reconnecting a monitor or waking the Mac **never automatically disables the panel**.
@@ -41,7 +43,7 @@ The app attempts restoration when the last usable external display disconnects, 
 System-sleep, unplug and quit recovery remain enabled regardless of the screen-sleep option.
 
 Removal of the last external monitor requests immediate restoration, with continued active-state checks. If normal recovery fails with no external monitor available, the app also requests macOS's saved display configuration. **This may reset display arrangements.** Restoration is still not guaranteed on every machine or after driver failures.
-Closing the window keeps the app running. Clicking its Dock icon or reopening the app first attempts restoration if the panel is inactive or recovery is pending. Quit using **恢复屏幕并退出** (“Restore and quit”), rather than force-quitting.
+Closing the window keeps the app running. Clicking its Dock icon or reopening the app first attempts restoration if recovery is pending. If no record exists but recovery is needed, click **Refresh** and manually select **Restore built-in display**. Quit using **恢复屏幕并退出** (“Restore and quit”), rather than force-quitting.
 
 ## If the screen goes black
 

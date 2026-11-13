@@ -122,7 +122,6 @@ final class DisplayController {
         }
         RunLoop.main.add(timer!, forMode: .common)
         refresh()
-        if !recoveryPending && snapshot?.builtinActive == false { restore() }
     }
 
     func stop() {
@@ -159,7 +158,7 @@ final class DisplayController {
 
     func recoverOnReopen() {
         refresh()
-        if recoveryPending || snapshot?.builtinActive == false { restore() }
+        if recoveryPending { restore() }
     }
 
     func handleDisplayChange(_ display: CGDirectDisplayID, flags: CGDisplayChangeSummaryFlags) {
@@ -274,7 +273,7 @@ final class DisplayController {
                 builtinActive: current.builtinActive,
                 usableExternalCount: current.usableExternalIDs.count,
                 availableExternalCount: current.availableExternalIDs.count,
-                recoveryPending: recoveryPending || current.builtinActive == false,
+                recoveryPending: recoveryPending,
                 operationPending: busy, sleeping: sleeping,
                 displaySleeping: displaysSleeping || current.externalDisplaysAsleep,
                 restoreOnDisplaySleep: settings.restoreOnDisplaySleep
