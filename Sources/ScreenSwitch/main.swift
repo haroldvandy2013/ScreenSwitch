@@ -58,9 +58,8 @@ if arguments.contains("--restore") {
         controller.onError = { error in
             fputs("\(error.localizedDescription)\n", stderr)
         }
-        controller.refresh()
         controller.restore()
-        for _ in 0..<6 {
+        for _ in 0..<Int(DisplayController.recoveryTimeout) {
             Thread.sleep(forTimeInterval: 1)
             controller.refresh()
             if !controller.recoveryPending && controller.snapshot?.builtinActive == true {

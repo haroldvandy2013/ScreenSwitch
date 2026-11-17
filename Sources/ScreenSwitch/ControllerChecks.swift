@@ -9,6 +9,7 @@ final class SimulatedDisplay: DisplayBackend {
     var builtinKnown = true
     var delayDisable = false
     var rejectRestore = false
+    var delayRestore = false
     var rejectDisable = false
     var externalAsleep = false
     var savedRestoreCalls = 0
@@ -47,6 +48,7 @@ final class SimulatedDisplay: DisplayBackend {
     func setBuiltinEnabled(_ enabled: Bool) throws {
         calls.append(enabled)
         if enabled && rejectRestore { throw DisplayFailure.transaction(.restore, 1000) }
+        if enabled && delayRestore { return }
         if !enabled {
             recoveryPending = true
             if rejectDisable { throw DisplayFailure.noExternal }
@@ -154,10 +156,10 @@ func runControllerChecks() {
         control.refresh()
         clock.addTimeInterval(6)
         control.refresh()
-        expect(errors.count == 1, "Restore failure presents one warning, not an alert loop")
+        expect(errors.isEmpty, "Recovery warning must wait until all scheduled retries are exhausted")
         expect(control.recoveryPending && !control.canDisable, "Failed restore keeps durable recovery intent")
         backend.rejectRestore = false
-        clock.addTimeInterval(1)
+        clock.addTimeInterval(5)
         control.refresh()
         control.refresh()
         clock.addTimeInterval(2)
@@ -576,6 +578,99 @@ func runControllerChecks() {
         clock.addTimeInterval(1)
         control.refresh(readOnly: true)
         expect(!control.recoveryPending && backend.calls.isEmpty, "A persisted record can be cleared after stable observation without display transactions")
+    }
+    for noOpSuccess in [false, true] {
+        var clock = Date()
+        let backend = SimulatedDisplay()
+        let control = DisplayController(driver: backend, now: { clock })
+        var errors: [Error] = []
+        control.onError = { errors.append($0) }
+        control.disable()
+        backend.rejectRestore = !noOpSuccess
+        backend.delayRestore = noOpSuccess
+        backend.externalCount = 0
+        control.refresh()
+        expect(backend.calls == [false, true], "Unplug performs one immediate recovery attempt")
+        for (index, interval) in [1.0, 3.0, 5.0, 10.0, 15.0].enumerated() {
+            clock.addTimeInterval(interval - 0.01)
+            control.refresh()
+            expect(backend.calls.count == index + 2, "Retry must not occur before its specified interval")
+            clock.addTimeInterval(0.01)
+            control.refresh()
+            expect(backend.calls.count == index + 3, "Retry must occur at each specified interval, even after a success-shaped no-op")
+            expect(errors.isEmpty, "A pending retry schedule must not show a premature exhaustion alert")
+        }
+        expect(backend.calls == [false, true, true, true, true, true, true], "Schedule contains exactly one initial attempt and five retries")
+        clock.addTimeInterval(4.99)
+        control.refresh()
+        expect(errors.isEmpty && control.busy, "Final attempt receives its full five-second confirmation window")
+        clock.addTimeInterval(0.01)
+        control.refresh()
+        expect(errors.count == 1 && !control.busy && control.recoveryPending, "Exhaustion warns once, retains intent and releases the manual restore button")
+        let savedCalls = backend.savedRestoreCalls
+        clock.addTimeInterval(100)
+        control.refresh()
+        control.handleSleep()
+        control.handleWake()
+        control.handleDisplaysSleep()
+        control.handleDisplaysWake()
+        control.handleDisplayChange(10, flags: .removeFlag)
+        expect(backend.calls.count == 7 && backend.savedRestoreCalls == savedCalls, "Watchdog and automatic notifications cannot restart an exhausted schedule")
+        expect(errors.count == 1, "Exhausted watchdog must not repeat warnings")
+        backend.rejectRestore = false
+        backend.delayRestore = false
+        control.restore()
+        control.refresh(readOnly: true)
+        clock.addTimeInterval(2)
+        control.refresh()
+        expect(backend.calls.count == 8 && !control.recoveryPending, "Explicit manual restore starts a fresh schedule and can finish recovery")
+    }
+    do {
+        var clock = Date()
+        let backend = SimulatedDisplay()
+        let control = DisplayController(driver: backend, now: { clock })
+        control.disable()
+        backend.rejectRestore = true
+        backend.externalCount = 0
+        control.refresh()
+        clock.addTimeInterval(0.5)
+        control.handleWake()
+        expect(backend.calls.count == 2, "Wake must not bypass the retry deadline")
+        clock.addTimeInterval(0.5)
+        control.refresh()
+        backend.rejectRestore = false
+        clock.addTimeInterval(3)
+        control.refresh()
+        control.refresh()
+        clock.addTimeInterval(2)
+        control.refresh()
+        expect(!control.recoveryPending, "An intermediate retry can be stably confirmed")
+        clock.addTimeInterval(100)
+        control.refresh()
+        expect(backend.calls == [false, true, true, true], "Stable success cancels all remaining retries")
+    }
+    do {
+        var clock = Date()
+        let backend = SimulatedDisplay()
+        backend.builtinActive = false
+        backend.recoveryPending = true
+        backend.rejectRestore = true
+        backend.rejectSnapshot = true
+        let control = DisplayController(driver: backend, now: { clock })
+        var errors: [Error] = []
+        control.onError = { errors.append($0) }
+        control.restore()
+        for interval in [1.0, 3.0, 5.0, 10.0, 15.0] {
+            clock.addTimeInterval(interval)
+            control.refresh()
+        }
+        clock.addTimeInterval(5)
+        control.refresh()
+        expect(backend.calls.count == 6 && errors.count == 1, "Enumeration failures obey the same retry limit and final warning")
+        expect(!control.busy && control.recoveryPending, "Enumeration failures cannot leave the retry UI busy forever")
+        clock.addTimeInterval(100)
+        control.refresh()
+        expect(backend.calls.count == 6 && errors.count == 1, "Failed enumeration after exhaustion does not restart recovery")
     }
     for optIn in [false, true] {
         for builtinKnown in [false, true] {

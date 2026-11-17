@@ -14,6 +14,9 @@ private let displayCallback: CGDisplayReconfigurationCallBack = { display, flags
 
 @MainActor
 final class DisplayController {
+    static let retryIntervals: [TimeInterval] = [1, 3, 5, 10, 15]
+    static let recoveryTimeout = retryIntervals.reduce(0, +) + 6
+
     enum Operation {
         case disabling(Date)
         case restoring(Date)
@@ -34,6 +37,7 @@ final class DisplayController {
     private var restoreCommandSucceeded = false
     private var restoreFailureAlerted = false
     private var nextRestoreAttempt = Date.distantPast
+    private var restoreAttempts = 0
     private var nextSavedRestoreAttempt = Date.distantPast
     private var savedRestoreRequested = false
     private var disableSettlingUntil: Date?
@@ -140,7 +144,7 @@ final class DisplayController {
         logger.notice("Event: system sleep; recoveryPending=\(self.recoveryPending)")
         resetActiveConfirmation()
         sleeping = true
-        if recoveryPending { restore() }
+        if recoveryPending { restore(restartRetries: false) }
         refresh()
     }
 
@@ -150,7 +154,7 @@ final class DisplayController {
         sleeping = false
         displaysSleeping = false
         // Wake never reapplies a previous disable request.
-        if recoveryPending { restore() }
+        if recoveryPending { restore(restartRetries: false) }
         refresh()
     }
 
@@ -171,7 +175,7 @@ final class DisplayController {
 
     func recoverOnReopen() {
         logger.notice("Event: reopen; recoveryPending=\(self.recoveryPending)")
-        refresh()
+        refresh(readOnly: true)
         if recoveryPending { restore() }
     }
 
@@ -199,6 +203,8 @@ final class DisplayController {
             disableSettlingUntil = now().addingTimeInterval(3)
             disableRollbackNeeded = true
             disableIntent = true
+            restoreAttempts = 0
+            nextRestoreAttempt = .distantPast
             resetActiveConfirmation()
             try driver.setBuiltinEnabled(false)
             logger.notice("Manual disable transaction committed; awaiting active-state verification")
@@ -213,10 +219,14 @@ final class DisplayController {
         }
     }
 
-    func restore() {
-        logger.notice("Restore requested; recoveryPending=\(self.recoveryPending)")
+    func restore(restartRetries: Bool = true) {
+        logger.notice("Restore requested; recoveryPending=\(self.recoveryPending), restartRetries=\(restartRetries)")
         refresh(readOnly: true)
         if snapshot?.builtinID != nil, snapshot?.builtinActive == true, canConfirmActive {
+            return
+        }
+        if !restartRetries && recoveryWanted {
+            refresh()
             return
         }
         recoveryWanted = true
@@ -226,14 +236,27 @@ final class DisplayController {
         if !driver.markRecoveryPending() { report(DisplayFailure.recoveryRecord) }
         operation = .restoring(now().addingTimeInterval(5))
         nextRestoreAttempt = .distantPast
+        restoreAttempts = 0
         attemptRestore()
         refresh()
     }
 
     private func attemptRestore() {
-        guard now() >= nextRestoreAttempt else { return }
-        nextRestoreAttempt = now().addingTimeInterval(1)
-        defer { disableRollbackNeeded = false }
+        guard restoreAttempts <= Self.retryIntervals.count, now() >= nextRestoreAttempt else { return }
+        restoreAttempts += 1
+        logger.notice("Recovery attempt \(self.restoreAttempts)/\(Self.retryIntervals.count + 1)")
+        defer {
+            disableRollbackNeeded = false
+            operation = .restoring(now().addingTimeInterval(5))
+            if restoreAttempts <= Self.retryIntervals.count {
+                let delay = Self.retryIntervals[restoreAttempts - 1]
+                nextRestoreAttempt = now().addingTimeInterval(delay)
+                logger.notice("Next recovery retry in \(delay) seconds")
+            } else {
+                nextRestoreAttempt = .distantFuture
+                logger.notice("All five retries submitted; awaiting final recovery confirmation")
+            }
+        }
         do {
             // Re-enable even an apparently active panel if a disable may still settle.
             try driver.setBuiltinEnabled(true)
@@ -270,6 +293,8 @@ final class DisplayController {
         savedRestoreRequested = false
         disableSettlingUntil = nil
         disableRollbackNeeded = false
+        restoreAttempts = 0
+        nextRestoreAttempt = .distantPast
         resetActiveConfirmation()
         onRestored?()
     }
@@ -294,7 +319,7 @@ final class DisplayController {
             removedDisplays.formIntersection(Set(observed.onlineIDs))
             snapshot = current
             let topology = "builtin=\(current.builtinID.map(String.init) ?? "unknown"), online=\(current.onlineIDs.sorted()), external=\(current.availableExternalIDs.sorted()), usable=\(current.usableExternalIDs.sorted())"
-            let state = "\(topology), active=\(current.builtinActive), record=\(driver.recoveryPending), intent=\(disableIntent), wanted=\(recoveryWanted), busy=\(busy), sleeping=\(sleeping), displaysSleeping=\(displaysSleeping), removed=\(removedDisplays.sorted())"
+            let state = "\(topology), active=\(current.builtinActive), record=\(driver.recoveryPending), intent=\(disableIntent), wanted=\(recoveryWanted), attempts=\(restoreAttempts), busy=\(busy), sleeping=\(sleeping), displaysSleeping=\(displaysSleeping), removed=\(removedDisplays.sorted())"
             if state != lastStateLog {
                 logger.notice("Display state: \(state, privacy: .public)")
                 lastStateLog = state
@@ -349,17 +374,8 @@ final class DisplayController {
 
             if recoveryWanted {
                 if !(current.builtinID != nil && current.builtinActive && canConfirmActive), !readOnly {
-                    if operation == nil { operation = .restoring(now().addingTimeInterval(5)) }
                     attemptRestore()
                 }
-            }
-
-            if case .restoring(let deadline) = operation,
-               !readOnly, activeSince == nil, now() >= deadline, !restoreFailureAlerted {
-                restoreFailureAlerted = true
-                report(DisplayFailure.notRestored)
-                onError?(DisplayFailure.notRestored)
-                // Keep retrying, but do not repeatedly present modal alerts.
             }
         } catch {
             resetActiveConfirmation()
@@ -374,6 +390,15 @@ final class DisplayController {
                 }
                 attemptRestore()
             }
+        }
+        if case .restoring(let deadline) = operation,
+           !readOnly, restoreAttempts > Self.retryIntervals.count,
+           activeSince == nil, now() >= deadline, !restoreFailureAlerted {
+            restoreFailureAlerted = true
+            operation = nil
+            logger.error("Recovery retries exhausted; keeping recovery record, manual retry remains available")
+            report(DisplayFailure.notRestored)
+            onError?(DisplayFailure.notRestored)
         }
         onChange?()
     }

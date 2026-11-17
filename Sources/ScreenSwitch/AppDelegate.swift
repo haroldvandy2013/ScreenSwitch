@@ -382,7 +382,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.showError(DisplayFailure.quitCancelled)
         }
         quitTimeout = timeout
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: timeout)
+        DispatchQueue.main.asyncAfter(deadline: .now() + DisplayController.recoveryTimeout, execute: timeout)
         return .terminateLater
     }
 
