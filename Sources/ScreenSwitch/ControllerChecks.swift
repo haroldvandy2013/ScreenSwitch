@@ -207,10 +207,15 @@ func runControllerChecks() {
         let backend = SimulatedDisplay()
         let control = DisplayController(driver: backend)
         control.disable()
-        control.recoverOnReopen()
-        expect(backend.calls == [false, true], "Reopening the single app restores an intentionally disabled panel")
+        control.refreshOnReopen()
+        expect(backend.calls == [false] && !backend.builtinActive && control.recoveryPending, "Reopening preserves an intentionally disabled panel and recovery intent")
+        backend.externalCount = 0
+        control.refreshOnReopen()
+        expect(backend.calls == [false], "Reopen remains read-only even with no external monitor")
+        control.refresh()
+        expect(backend.calls == [false, true], "Watchdog retains mandatory unplug recovery after reopening")
         confirmRecovery(control)
-        expect(!control.recoveryPending, "Reopen restoration clears recovery intent")
+        expect(!control.recoveryPending, "Unplug recovery can still finish after a read-only reopen")
     }
     do {
         let backend = SimulatedDisplay()
@@ -228,13 +233,13 @@ func runControllerChecks() {
         let backend = SimulatedDisplay()
         backend.builtinActive = false
         let control = DisplayController(driver: backend)
-        control.recoverOnReopen()
+        control.refreshOnReopen()
         expect(backend.calls.isEmpty && !control.recoveryPending, "Reopening an unmarked inactive panel must not infer a disable")
         control.restore()
         expect(backend.calls == [true], "Explicit manual recovery remains available without a saved marker")
         confirmRecovery(control)
         expect(!control.recoveryPending, "Manual recovery of an unmarked panel is confirmed")
-        control.recoverOnReopen()
+        control.refreshOnReopen()
         expect(backend.calls == [true], "Reopening with an active panel does not change display configuration")
     }
     do {
@@ -615,6 +620,7 @@ func runControllerChecks() {
         control.handleDisplaysSleep()
         control.handleDisplaysWake()
         control.handleDisplayChange(10, flags: .removeFlag)
+        control.refreshOnReopen()
         expect(backend.calls.count == 7 && backend.savedRestoreCalls == savedCalls, "Watchdog and automatic notifications cannot restart an exhausted schedule")
         expect(errors.count == 1, "Exhausted watchdog must not repeat warnings")
         backend.rejectRestore = false
@@ -635,6 +641,7 @@ func runControllerChecks() {
         control.refresh()
         clock.addTimeInterval(0.5)
         control.handleWake()
+        control.refreshOnReopen()
         expect(backend.calls.count == 2, "Wake must not bypass the retry deadline")
         clock.addTimeInterval(0.5)
         control.refresh()
@@ -699,7 +706,7 @@ func runControllerChecks() {
                 control.handleWake()
                 control.handleDisplaysWake()
                 control.handleDisplayChange(1, flags: .setModeFlag)
-                control.recoverOnReopen()
+                control.refreshOnReopen()
                 control.refresh()
             }
             expect(backend.calls.isEmpty && backend.savedRestoreCalls == 0, "Unmarked sleep, wake, callbacks and reopen must never submit recovery transactions, regardless of opt-in")

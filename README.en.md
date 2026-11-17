@@ -34,7 +34,7 @@ Use **语言 / Language** in the window or menu to select “简体中文” or 
 
 The version appears in the top-right corner. **Refresh** only rechecks display state, without disabling or restoring a display. The single action reads “Turn off built-in display” while the panel is on, and “Restore built-in display” while it is off. An already active panel does not receive redundant restore transactions.
 
-The source and local fix are **v0.2.5** (the download remains v0.2.2): automatic recovery requires an existing recovery record or this process's manual-disable intent. Temporary inactivity during normal display sleep, system sleep or wake does not count as an app-issued disable. Recovery intent is cleared only after observations show an active internal display with unchanged display configuration for at least two seconds, rather than after one transient active reading.
+The source and local fix are **v0.2.6** (the download remains v0.2.2): automatic recovery requires an existing recovery record or this process's manual-disable intent. Temporary inactivity during normal display sleep, system sleep or wake does not count as an app-issued disable. Recovery intent is cleared only after observations show an active internal display with unchanged display configuration for at least two seconds, rather than after one transient active reading.
 
 Recovery starts immediately, followed by up to **five retries** separated by **1, 3, 5, 10 and 15 seconds** (approximately 1, 4, 9, 19 and 34 seconds after the initial attempt when API calls return promptly). Stable success cancels the remaining retries. If the panel is still inactive five seconds after the final attempt, the app warns once and stops retrying, retaining recovery intent. Reconnect the external monitor and manually select **Restore built-in display** to start a new round. Sleep/wake notifications do not reset the attempt count. Restore-only mode and normal quit allow approximately 40 seconds for the sequence.
 
@@ -45,14 +45,14 @@ The app attempts restoration when the last usable external display disconnects, 
 System-sleep, unplug and quit recovery remain enabled regardless of the screen-sleep option.
 
 Removal of the last external monitor requests immediate restoration, with continued active-state checks. If normal recovery fails with no external monitor available, the app also requests macOS's saved display configuration. **This may reset display arrangements.** Restoration is still not guaranteed on every machine or after driver failures.
-Closing the window keeps the app running. Clicking its Dock icon or reopening the app first attempts restoration if recovery is pending. If no record exists but recovery is needed, click **Refresh** and manually select **Restore built-in display**. Quit using **恢复屏幕并退出** (“Restore and quit”), rather than force-quitting.
+Closing the window keeps the app running. Clicking the running app's Dock icon or opening it again only shows the window and refreshes state without display transactions or resetting retry counts. A fresh launch after a crash still attempts recovery using the saved record. To restore manually, click **Refresh** and select **Restore built-in display**. Quit using **恢复屏幕并退出** (“Restore and quit”), rather than force-quitting.
 
 ## If the screen goes black
 
 Before first use, locate ScreenSwitch. If you plan to find it through Spotlight, confirm that Spotlight has indexed it in advance.
 
 1. Reconnect and wake the external monitor, then try **恢复内置屏幕**.
-2. Reopen **ScreenSwitch.app**, directly or through Spotlight, to attempt recovery first. Reopening may not help if the process is hung; continue to the next step.
+2. Open **ScreenSwitch.app**, directly or through Spotlight, and select **Restore built-in display**. If the app previously crashed, a fresh launch attempts recovery using the saved record. Reopening may not help if the process is hung; continue to the next step.
 3. Try closing and reopening the lid. If recovery still fails, restart the Mac, keeping unsaved work in mind.
 
 **Automatic recovery is not guaranteed after a crash, force quit, or system failure.** For the first attempt, use a directly connected physical monitor—not a virtual display or remote desktop as your only fallback. Avoid running other display-disabling utilities at the same time. Stop trying if disabling or restoration fails.

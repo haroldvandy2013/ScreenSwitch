@@ -243,7 +243,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        controller.recoverOnReopen()
+        controller.refreshOnReopen()
         showControlWindow()
         return true
     }
@@ -323,7 +323,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         “熄屏时自动恢复内置屏幕”默认关闭，只有勾选后才在显示器熄屏时尝试恢复内屏输出。它不重启电脑，也不发送唤醒命令；实际亮屏行为取决于系统。系统休眠、拔线和退出时的安全恢复不受此选项影响。
 
-        如异常黑屏：接回外屏；重新打开 ScreenSwitch（优先尝试恢复），或选择“恢复内置屏幕”；尝试合盖再开盖；仍无效请重新启动 Mac。强制退出、崩溃、系统或驱动故障时，自动恢复不能保证。
+        点击 Dock 图标只显示窗口，不改变屏幕开关。如异常黑屏：接回外屏，选择“恢复内置屏幕”；异常退出后重新启动应用会依据恢复记录尝试恢复。尝试合盖再开盖；仍无效请重新启动 Mac。强制退出、崩溃、系统或驱动故障时，自动恢复不能保证。
 
         不需要管理员权限，不修改 SIP、亮度或全局电源设置。私有接口可用不等于硬件兼容；首次操作前请阅读 README.md。
         """, """
@@ -333,7 +333,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Restore built-in display on screen sleep is off by default. Enable it to attempt restoration when displays sleep. It does not reboot the Mac or send wake commands; actual screen illumination depends on macOS. System-sleep, unplug and quit recovery remain enabled regardless of this option.
 
-        If the screen goes black: reconnect the monitor; reopen ScreenSwitch to attempt recovery first, or choose Restore built-in display; try closing and reopening the lid; restart the Mac if necessary. Recovery is not guaranteed after crashes, force quit, system or driver failures.
+        Clicking the Dock icon only shows the window without changing display output. If the screen goes black: reconnect the monitor and choose Restore built-in display. A fresh launch after a crash attempts recovery using the saved record. Try closing and reopening the lid; restart the Mac if necessary. Recovery is not guaranteed after crashes, force quit, system or driver failures.
 
         No administrator access, SIP, brightness or global power changes are needed. A private API being available does not establish hardware compatibility.
         """)
@@ -496,7 +496,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             precondition(windowToggle?.title == "Restore built-in display", "Off-state action translates")
             precondition(windowStatus?.stringValue == "Built-in display off · External display in use", "Off-state status translates")
             _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: true)
-            precondition(backend.calls == [false, true], "Reopening the running single app must restore the panel")
+            precondition(backend.calls == [false] && !backend.builtinActive, "Dock click with a visible window must preserve the disabled panel")
+            controlWindow?.close()
+            _ = applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
+            precondition(controlWindow?.isVisible == true, "Dock click must reopen a closed window")
+            precondition(backend.calls == [false] && !backend.builtinActive && controller.recoveryPending, "Dock click with a closed window must preserve display state and recovery intent")
+            windowToggle?.performClick(nil)
+            precondition(backend.calls == [false, true], "Only the explicit restore action restores the panel")
             controller.refresh(readOnly: true)
             Thread.sleep(forTimeInterval: 2.05)
             controller.refresh(readOnly: true)

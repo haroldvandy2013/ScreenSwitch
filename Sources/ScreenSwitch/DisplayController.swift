@@ -173,10 +173,9 @@ final class DisplayController {
         refresh()
     }
 
-    func recoverOnReopen() {
-        logger.notice("Event: reopen; recoveryPending=\(self.recoveryPending)")
+    func refreshOnReopen() {
+        logger.notice("Event: reopen (read-only); recoveryPending=\(self.recoveryPending)")
         refresh(readOnly: true)
-        if recoveryPending { restore() }
     }
 
     func handleDisplayChange(_ display: CGDirectDisplayID, flags: CGDisplayChangeSummaryFlags) {
