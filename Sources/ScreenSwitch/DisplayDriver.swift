@@ -1,6 +1,7 @@
 import CoreGraphics
 import Darwin
 import Foundation
+import OSLog
 import ScreenSwitchCore
 
 enum DisplayStep {
@@ -90,6 +91,7 @@ protocol DisplayBackend: AnyObject {
 }
 
 final class DisplayDriver: DisplayBackend {
+    private let logger = Logger(subsystem: "local.ScreenSwitch", category: "Driver")
     private typealias ConfigureEnabled = @convention(c)
         (CGDisplayConfigRef, CGDirectDisplayID, Bool) -> Int32
 
@@ -177,22 +179,28 @@ final class DisplayDriver: DisplayBackend {
     @discardableResult
     func markRecoveryPending() -> Bool {
         preferences.set(true, forKey: pendingKey)
-        return preferences.synchronize()
+        let saved = preferences.synchronize()
+        logger.notice("Recovery record set; persisted=\(saved)")
+        return saved
     }
 
     func markRecovered() {
         preferences.removeObject(forKey: pendingKey)
-        preferences.synchronize()
+        let saved = preferences.synchronize()
+        logger.notice("Recovery record cleared; persisted=\(saved)")
+        if !saved { logger.error("Could not persist recovery record removal") }
     }
 
     func setBuiltinEnabled(_ enabled: Bool) throws {
         guard let configureEnabled else { throw DisplayFailure.apiUnavailable }
         let before = try snapshot()
         guard let builtin = before.builtinID else { throw DisplayFailure.noBuiltin }
+        logger.notice("Display transaction requested: enabled=\(enabled), builtin=\(builtin), active=\(before.builtinActive), external=\(String(describing: before.availableExternalIDs), privacy: .public), recoveryRecord=\(self.recoveryPending)")
         if !enabled && before.usableExternalIDs.isEmpty { throw DisplayFailure.noExternal }
 
         var configuration: CGDisplayConfigRef?
         let begin = CGBeginDisplayConfiguration(&configuration)
+        logger.notice("Begin display configuration: result=\(begin.rawValue)")
         guard begin == .success, let configuration else {
             throw DisplayFailure.transaction(.begin, begin.rawValue)
         }
@@ -205,6 +213,7 @@ final class DisplayDriver: DisplayBackend {
             guard markRecoveryPending() else { throw DisplayFailure.recoveryRecord }
         }
         let result = configureEnabled(configuration, builtin, enabled)
+        logger.notice("Configure builtin enabled=\(enabled): result=\(result)")
         guard result == CGError.success.rawValue else {
             throw DisplayFailure.transaction(
                 enabled ? .restore : .disable,
@@ -219,6 +228,7 @@ final class DisplayDriver: DisplayBackend {
         }
         consumed = true
         let complete = CGCompleteDisplayConfiguration(configuration, .forSession)
+        logger.notice("Complete display configuration enabled=\(enabled): result=\(complete.rawValue)")
         guard complete == .success else {
             throw DisplayFailure.transaction(.commit, complete.rawValue)
         }

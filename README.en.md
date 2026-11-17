@@ -34,7 +34,7 @@ Use **语言 / Language** in the window or menu to select “简体中文” or 
 
 The version appears in the top-right corner. **Refresh** only rechecks display state, without disabling or restoring a display. The single action reads “Turn off built-in display” while the panel is on, and “Restore built-in display” while it is off. An already active panel does not receive redundant restore transactions.
 
-The source and local fix are **v0.2.3** (the download remains v0.2.2): automatic recovery requires an existing recovery record. Temporary inactivity during normal display sleep, system sleep or wake no longer counts as an app-issued disable.
+The source and local fix are **v0.2.4** (the download remains v0.2.2): automatic recovery requires an existing recovery record or this process's manual-disable intent. Temporary inactivity during normal display sleep, system sleep or wake does not count as an app-issued disable. Recovery intent is cleared only after observations show an active internal display with unchanged display configuration for at least two seconds, rather than after one transient active reading.
 
 **Optional: Restore built-in display on screen sleep.** Unchecked by default. When enabled, display sleep triggers an attempt to restore the panel disabled by this app; the choice is remembered. This means actual display sleep, not just locking the screen or starting a screensaver. It does not reboot the Mac or send wake commands; screen illumination depends on macOS. Waking never automatically disables the panel again.
 
@@ -54,6 +54,16 @@ Before first use, locate ScreenSwitch. If you plan to find it through Spotlight,
 3. Try closing and reopening the lid. If recovery still fails, restart the Mac, keeping unsaved work in mind.
 
 **Automatic recovery is not guaranteed after a crash, force quit, or system failure.** For the first attempt, use a directly connected physical monitor—not a virtual display or remote desktop as your only fallback. Avoid running other display-disabling utilities at the same time. Stop trying if disabling or restoration fails.
+
+### Diagnostic logs
+
+Starting with v0.2.4, macOS's local unified log records display-state changes, display callbacks, sleep/wake, recovery reasons, record writes/removals, and display-API return codes. Screen contents are not recorded and logs are not uploaded. If an issue recurs, note the time and whether you have reconnected the external monitor; keep the app running. **Copy read-only diagnostics** in the menu captures current state. Export the last day's events from Terminal:
+
+```bash
+/usr/bin/log show --last 1d --style compact --predicate 'subsystem == "local.ScreenSwitch"' > ~/Desktop/ScreenSwitch.log
+```
+
+macOS controls retention. A healthy current state does not establish what happened during the incident.
 
 <details>
 <summary>Build from source</summary>

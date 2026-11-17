@@ -38,6 +38,10 @@ final class DisplayController {
     private var savedRestoreRequested = false
     private var disableSettlingUntil: Date?
     private var disableRollbackNeeded = false
+    private var disableIntent = false
+    private var activeSince: Date?
+    private var activeTopology: String?
+    private var lastStateLog: String?
     private var removedDisplays: Set<CGDirectDisplayID> = []
     private var lastError: Error?
     private var lastLoggedMessage: String?
@@ -55,7 +59,7 @@ final class DisplayController {
     }
 
     var apiAvailable: Bool { driver.apiAvailable }
-    var recoveryPending: Bool { driver.recoveryPending || recoveryWanted }
+    var recoveryPending: Bool { driver.recoveryPending || recoveryWanted || disableIntent }
     var busy: Bool { operation != nil }
 
     var canDisable: Bool {
@@ -72,6 +76,7 @@ final class DisplayController {
     }
 
     func start() {
+        logger.notice("Starting \(AppVersion.label(), privacy: .public); macOS \(ProcessInfo.processInfo.operatingSystemVersionString, privacy: .public); recoveryRecord=\(self.driver.recoveryPending)")
         let result = CGDisplayRegisterReconfigurationCallback(displayCallback, nil)
         callbackRegistered = result == .success
         if !callbackRegistered {
@@ -132,12 +137,16 @@ final class DisplayController {
     }
 
     func handleSleep() {
+        logger.notice("Event: system sleep; recoveryPending=\(self.recoveryPending)")
+        resetActiveConfirmation()
         sleeping = true
         if recoveryPending { restore() }
         refresh()
     }
 
     func handleWake() {
+        logger.notice("Event: system wake; recoveryPending=\(self.recoveryPending)")
+        resetActiveConfirmation()
         sleeping = false
         displaysSleeping = false
         // Wake never reapplies a previous disable request.
@@ -146,22 +155,29 @@ final class DisplayController {
     }
 
     func handleDisplaysSleep() {
+        logger.notice("Event: displays sleep; recoveryPending=\(self.recoveryPending); optIn=\(self.settings.restoreOnDisplaySleep)")
+        resetActiveConfirmation()
         displaysSleeping = true
         refresh()
     }
 
     func handleDisplaysWake() {
+        logger.notice("Event: displays wake; recoveryPending=\(self.recoveryPending)")
+        resetActiveConfirmation()
         displaysSleeping = false
         // A display wake never reapplies a previous disable request.
         refresh()
     }
 
     func recoverOnReopen() {
+        logger.notice("Event: reopen; recoveryPending=\(self.recoveryPending)")
         refresh()
         if recoveryPending { restore() }
     }
 
     func handleDisplayChange(_ display: CGDirectDisplayID, flags: CGDisplayChangeSummaryFlags) {
+        logger.notice("Display callback: id=\(display), flags=\(flags.rawValue), recoveryPending=\(self.recoveryPending)")
+        resetActiveConfirmation()
         if flags.contains(.removeFlag) {
             removedDisplays.insert(display)
         }
@@ -172,6 +188,7 @@ final class DisplayController {
     }
 
     func disable() {
+        logger.notice("Manual disable requested")
         refresh()
         guard canDisable else {
             onError?(DisplayFailure.disableUnavailable)
@@ -181,12 +198,14 @@ final class DisplayController {
             operation = .disabling(now().addingTimeInterval(3))
             disableSettlingUntil = now().addingTimeInterval(3)
             disableRollbackNeeded = true
+            disableIntent = true
+            resetActiveConfirmation()
             try driver.setBuiltinEnabled(false)
-            logger.info("Manual disable transaction committed; awaiting active-state verification")
+            logger.notice("Manual disable transaction committed; awaiting active-state verification")
             refresh()
         } catch {
             operation = nil
-            recoveryWanted = driver.recoveryPending
+            recoveryWanted = recoveryPending
             report(error)
             onError?(error)
             if recoveryWanted { restore() }
@@ -195,6 +214,7 @@ final class DisplayController {
     }
 
     func restore() {
+        logger.notice("Restore requested; recoveryPending=\(self.recoveryPending)")
         refresh(readOnly: true)
         if snapshot?.builtinID != nil, snapshot?.builtinActive == true, canConfirmActive {
             return
@@ -218,7 +238,7 @@ final class DisplayController {
             // Re-enable even an apparently active panel if a disable may still settle.
             try driver.setBuiltinEnabled(true)
             restoreCommandSucceeded = true
-            logger.info("Restore transaction committed; awaiting active-state verification")
+            logger.notice("Restore transaction committed; awaiting stable active-state verification")
         } catch {
             report(error)
             // Only use the broader public restore as a last-display emergency
@@ -239,7 +259,9 @@ final class DisplayController {
     }
 
     private func finishRecovery() {
+        logger.notice("Internal display remained active for at least 2 seconds; clearing recovery intent and record")
         driver.markRecovered()
+        disableIntent = false
         recoveryWanted = false
         operation = nil
         lastError = nil
@@ -248,7 +270,13 @@ final class DisplayController {
         savedRestoreRequested = false
         disableSettlingUntil = nil
         disableRollbackNeeded = false
+        resetActiveConfirmation()
         onRestored?()
+    }
+
+    private func resetActiveConfirmation() {
+        activeSince = nil
+        activeTopology = nil
     }
 
     func refresh(readOnly: Bool = false) {
@@ -265,8 +293,25 @@ final class DisplayController {
             )
             removedDisplays.formIntersection(Set(observed.onlineIDs))
             snapshot = current
+            let topology = "builtin=\(current.builtinID.map(String.init) ?? "unknown"), online=\(current.onlineIDs.sorted()), external=\(current.availableExternalIDs.sorted()), usable=\(current.usableExternalIDs.sorted())"
+            let state = "\(topology), active=\(current.builtinActive), record=\(driver.recoveryPending), intent=\(disableIntent), wanted=\(recoveryWanted), busy=\(busy), sleeping=\(sleeping), displaysSleeping=\(displaysSleeping), removed=\(removedDisplays.sorted())"
+            if state != lastStateLog {
+                logger.notice("Display state: \(state, privacy: .public)")
+                lastStateLog = state
+            }
             if current.builtinID != nil, current.builtinActive, recoveryPending, canConfirmActive {
-                finishRecovery()
+                if activeTopology != topology {
+                    activeTopology = topology
+                    activeSince = now()
+                    logger.notice("Recovery candidate active; retaining record until stable")
+                } else if let activeSince, now().timeIntervalSince(activeSince) >= 2 {
+                    finishRecovery()
+                }
+            } else {
+                if activeSince != nil {
+                    logger.notice("Recovery confirmation interrupted; retaining recovery record")
+                }
+                resetActiveConfirmation()
             }
             let policy = SafetyPolicy(
                 apiAvailable: apiAvailable, builtinKnown: current.builtinID != nil,
@@ -279,6 +324,7 @@ final class DisplayController {
                 restoreOnDisplaySleep: settings.restoreOnDisplaySleep
             )
             if !readOnly && policy.mustRestore && !recoveryWanted {
+                logger.notice("Automatic recovery: noExternal=\(current.availableExternalIDs.isEmpty), systemSleep=\(self.sleeping), displaySleep=\(self.displaysSleeping || current.externalDisplaysAsleep), sleepOptIn=\(self.settings.restoreOnDisplaySleep)")
                 recoveryWanted = true
                 restoreCommandSucceeded = false
                 savedRestoreRequested = false
@@ -302,22 +348,21 @@ final class DisplayController {
             }
 
             if recoveryWanted {
-                if current.builtinID != nil, current.builtinActive, canConfirmActive {
-                    finishRecovery()
-                } else if !readOnly {
+                if !(current.builtinID != nil && current.builtinActive && canConfirmActive), !readOnly {
                     if operation == nil { operation = .restoring(now().addingTimeInterval(5)) }
                     attemptRestore()
                 }
             }
 
             if case .restoring(let deadline) = operation,
-               !readOnly, now() >= deadline, !restoreFailureAlerted {
+               !readOnly, activeSince == nil, now() >= deadline, !restoreFailureAlerted {
                 restoreFailureAlerted = true
                 report(DisplayFailure.notRestored)
                 onError?(DisplayFailure.notRestored)
                 // Keep retrying, but do not repeatedly present modal alerts.
             }
         } catch {
+            resetActiveConfirmation()
             snapshot = nil
             report(error)
             // Enumeration failure must not silently leave an intentionally disabled panel.
@@ -342,6 +387,9 @@ final class DisplayController {
         } else if case .disabling = operation {
             return L("正在确认内置屏幕已关闭…", "Confirming built-in display is disabled…")
         } else if recoveryPending {
+            if activeSince != nil {
+                return L("正在确认内置屏幕稳定恢复…", "Confirming stable built-in display restoration…")
+            }
             if displaysSleeping || snapshot?.externalDisplaysAsleep == true {
                 return L("内置屏幕已关闭 · 显示器熄屏中", "Built-in display off · Displays asleep")
             }

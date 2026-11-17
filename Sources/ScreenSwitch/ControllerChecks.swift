@@ -66,6 +66,11 @@ func runControllerChecks() {
             exit(1)
         }
     }
+    func confirmRecovery(_ control: DisplayController) {
+        control.refresh(readOnly: true)
+        Thread.sleep(forTimeInterval: 2.05)
+        control.refresh(readOnly: true)
+    }
 
     do {
         let backend = SimulatedDisplay()
@@ -83,6 +88,7 @@ func runControllerChecks() {
         backend.externalCount = 0
         control.refresh()
         control.refresh()
+        confirmRecovery(control)
         expect(backend.calls == [false, true] && !control.recoveryPending, "Last external removal restores")
         backend.externalCount = 1
         control.refresh()
@@ -101,6 +107,7 @@ func runControllerChecks() {
         expect(!control.canDisable, "Sleep blocks manual disable")
         control.handleWake()
         expect(backend.calls == [false, true], "Wake never reapplies disable")
+        confirmRecovery(control)
         expect(!control.recoveryPending, "Restoration clears recovery record")
     }
     do {
@@ -113,6 +120,7 @@ func runControllerChecks() {
         control.refresh()
         expect(backend.calls == [false, true], "Unplug sends enable even while panel still looks active")
         control.refresh()
+        confirmRecovery(control)
         expect(!control.recoveryPending, "Pending disable race settles restored")
     }
     do {
@@ -126,6 +134,8 @@ func runControllerChecks() {
         clock.addTimeInterval(4)
         control.refresh()
         control.refresh()
+        clock.addTimeInterval(2)
+        control.refresh(readOnly: true)
         expect(errors.count == 1, "A no-op private API reports failure")
         expect(backend.calls == [false, true], "A no-op disable rolls back via enable")
         expect(!control.recoveryPending, "Failed disable can settle restored")
@@ -150,6 +160,8 @@ func runControllerChecks() {
         clock.addTimeInterval(1)
         control.refresh()
         control.refresh()
+        clock.addTimeInterval(2)
+        control.refresh(readOnly: true)
         expect(!control.recoveryPending, "Watchdog retries eventually restore")
     }
     do {
@@ -159,6 +171,7 @@ func runControllerChecks() {
         let control = DisplayController(driver: backend)
         control.refresh()
         control.refresh()
+        confirmRecovery(control)
         expect(backend.calls == [true] && !control.recoveryPending, "Crash marker restores on next launch")
     }
     do {
@@ -174,6 +187,7 @@ func runControllerChecks() {
         let control = DisplayController(driver: backend)
         control.disable()
         expect(backend.calls == [false, true], "Rejected disable attempts safe recovery")
+        confirmRecovery(control)
         expect(!control.recoveryPending, "Rejected transaction does not leave stale intent")
     }
     do {
@@ -182,6 +196,8 @@ func runControllerChecks() {
         control.disable()
         backend.builtinActive = true
         control.refresh()
+        expect(control.recoveryPending, "One active observation must retain recovery intent")
+        confirmRecovery(control)
         expect(!control.recoveryPending, "OS-driven restoration clears manual off state")
         expect(backend.calls == [false], "OS restoration is not fought by re-disabling")
     }
@@ -191,6 +207,7 @@ func runControllerChecks() {
         control.disable()
         control.recoverOnReopen()
         expect(backend.calls == [false, true], "Reopening the single app restores an intentionally disabled panel")
+        confirmRecovery(control)
         expect(!control.recoveryPending, "Reopen restoration clears recovery intent")
     }
     do {
@@ -213,6 +230,7 @@ func runControllerChecks() {
         expect(backend.calls.isEmpty && !control.recoveryPending, "Reopening an unmarked inactive panel must not infer a disable")
         control.restore()
         expect(backend.calls == [true], "Explicit manual recovery remains available without a saved marker")
+        confirmRecovery(control)
         expect(!control.recoveryPending, "Manual recovery of an unmarked panel is confirmed")
         control.recoverOnReopen()
         expect(backend.calls == [true], "Reopening with an active panel does not change display configuration")
@@ -310,6 +328,7 @@ func runControllerChecks() {
         control.handleDisplaysSleep()
         control.refresh()
         expect(backend.calls == [false, true], "Opted-in screen sleep cancels a disable still settling")
+        confirmRecovery(control)
         expect(!control.recoveryPending, "Settling-disable race finishes safely restored")
         control.handleDisplaysSleep()
         expect(backend.calls == [false, true], "Repeated screen-sleep notifications do not repeat confirmed restoration")
@@ -375,6 +394,7 @@ func runControllerChecks() {
         expect(backend.savedRestoreCalls == 1, "Failed enable with no external requests saved configuration recovery")
         expect(control.recoveryPending, "Void fallback is not success until active state is re-read")
         control.refresh()
+        confirmRecovery(control)
         expect(!control.recoveryPending && backend.builtinActive, "Fallback success verified through built-in active state")
         control.restore()
         expect(!control.recoveryPending && !control.busy, "Restoring an already active panel does not start another recovery")
@@ -412,6 +432,8 @@ func runControllerChecks() {
         expect(!control.recoveryPending && !control.busy && control.canDisable, "No-op restore leaves the app usable")
         backend.recoveryPending = true
         control.refresh(readOnly: true)
+        expect(backend.recoveryPending, "A marker survives the first active observation")
+        confirmRecovery(control)
         expect(!backend.recoveryPending && !control.busy, "Refresh clears a stale recovery marker when the internal panel is active")
         expect(backend.calls.isEmpty, "Clearing stale intent does not require a successful enable transaction")
     }
@@ -428,6 +450,8 @@ func runControllerChecks() {
         let calls = backend.calls
         backend.builtinActive = true
         control.refresh(readOnly: true)
+        expect(control.recoveryPending, "OS restoration must be stable before clearing recovery")
+        confirmRecovery(control)
         expect(!control.busy && !control.recoveryPending && control.canDisable, "OS-restored active state ends failed recovery and releases controls")
         expect(backend.calls == calls && restored == 1, "Refresh confirms actual recovery without issuing or requiring another transaction")
         control.refresh()
@@ -445,6 +469,7 @@ func runControllerChecks() {
         let recoveryControl = DisplayController(driver: backend)
         recoveryControl.refresh()
         recoveryControl.refresh()
+        confirmRecovery(recoveryControl)
         expect(backend.calls == [true] && !recoveryControl.recoveryPending, "A recorded disable still receives mandatory last-display recovery")
     }
     do {
@@ -475,7 +500,82 @@ func runControllerChecks() {
         clock.addTimeInterval(3)
         backend.builtinActive = true
         control.refresh(readOnly: true)
+        clock.addTimeInterval(2)
+        control.refresh(readOnly: true)
         expect(!control.recoveryPending && !control.busy, "Observed active state after the settling deadline clears a failed rollback")
+    }
+    do {
+        var clock = Date()
+        let backend = SimulatedDisplay()
+        let control = DisplayController(driver: backend, now: { clock })
+        control.disable()
+        backend.builtinActive = true
+        control.refresh()
+        control.refresh()
+        expect(control.recoveryPending, "Repeated reads at the same instant cannot clear a disable record")
+        clock.addTimeInterval(1)
+        control.refresh()
+        expect(control.recoveryPending, "A one-second active transient is not confirmed recovery")
+        backend.builtinActive = false
+        control.refresh()
+        backend.externalCount = 0
+        control.refresh()
+        expect(backend.calls == [false, true], "Unplug after a transient active state still restores the internal panel")
+        control.refresh()
+        clock.addTimeInterval(1.9)
+        control.refresh()
+        expect(control.recoveryPending, "Recovery remains pending below the two-second threshold")
+        clock.addTimeInterval(0.1)
+        control.refresh()
+        expect(!control.recoveryPending, "Stable recovery clears the record at the two-second threshold")
+    }
+    do {
+        var clock = Date()
+        let backend = SimulatedDisplay()
+        let control = DisplayController(driver: backend, now: { clock })
+        control.disable()
+        backend.recoveryPending = false
+        backend.externalCount = 0
+        control.refresh()
+        expect(backend.calls == [false, true] && control.recoveryPending, "Runtime disable intent preserves unplug safety even if the stored marker disappears")
+        control.refresh()
+        clock.addTimeInterval(2)
+        control.refresh()
+        expect(!control.recoveryPending, "Stable recovery also clears the runtime intent")
+    }
+    do {
+        var clock = Date()
+        let backend = SimulatedDisplay()
+        let control = DisplayController(driver: backend, now: { clock })
+        control.disable()
+        backend.builtinActive = true
+        control.refresh()
+        clock.addTimeInterval(1)
+        control.handleDisplayChange(10, flags: .setModeFlag)
+        clock.addTimeInterval(1)
+        control.refresh()
+        expect(control.recoveryPending, "A reconfiguration callback restarts active-state confirmation")
+        clock.addTimeInterval(1)
+        control.refresh()
+        expect(!control.recoveryPending, "Stable activity after reconfiguration completes recovery")
+    }
+    do {
+        var clock = Date()
+        let backend = SimulatedDisplay()
+        backend.recoveryPending = true
+        let control = DisplayController(driver: backend, now: { clock })
+        control.refresh(readOnly: true)
+        clock.addTimeInterval(1)
+        backend.rejectSnapshot = true
+        control.refresh(readOnly: true)
+        backend.rejectSnapshot = false
+        control.refresh(readOnly: true)
+        clock.addTimeInterval(1)
+        control.refresh(readOnly: true)
+        expect(control.recoveryPending, "Failed enumeration invalidates an active-state confirmation")
+        clock.addTimeInterval(1)
+        control.refresh(readOnly: true)
+        expect(!control.recoveryPending && backend.calls.isEmpty, "A persisted record can be cleared after stable observation without display transactions")
     }
     for optIn in [false, true] {
         for builtinKnown in [false, true] {
