@@ -4,7 +4,13 @@ import AppKit
 final class SimulatedDisplay: DisplayBackend {
     var apiAvailable = true
     var recoveryPending = false
+    var disableGuard = false
+    func setDisableGuard(_ enabled: Bool) -> Bool {
+        disableGuard = enabled
+        return true
+    }
     var builtinActive = true
+    var builtinAsleep = false
     var externalCount = 1
     var builtinKnown = true
     var delayDisable = false
@@ -17,17 +23,21 @@ final class SimulatedDisplay: DisplayBackend {
     var rejectSnapshot = false
     var snapshotCalls = 0
     var calls: [Bool] = []
+    var snapshotOverride: DisplaySnapshot?
 
     func snapshot() throws -> DisplaySnapshot {
         snapshotCalls += 1
         if rejectSnapshot { throw DisplayFailure.enumeration(1001) }
+        if let snapshotOverride { return snapshotOverride }
         return DisplaySnapshot(
             onlineIDs: (builtinActive ? [1] : []) + Array(10..<(10 + UInt32(externalCount))),
             builtinID: builtinKnown ? 1 : nil,
             builtinActive: builtinActive,
+            builtinAsleep: builtinAsleep,
             availableExternalIDs: Array(10..<(10 + UInt32(externalCount))),
             usableExternalIDs: externalAsleep ? [] : Array(10..<(10 + UInt32(externalCount))),
-            externalDisplaysAsleep: externalAsleep && externalCount > 0
+            externalDisplaysAsleep: externalAsleep && externalCount > 0,
+            ignoredVirtualIDs: []
         )
     }
 
@@ -50,6 +60,7 @@ final class SimulatedDisplay: DisplayBackend {
         if enabled && rejectRestore { throw DisplayFailure.transaction(.restore, 1000) }
         if enabled && delayRestore { return }
         if !enabled {
+            disableGuard = true
             recoveryPending = true
             if rejectDisable { throw DisplayFailure.noExternal }
             if delayDisable { return }
@@ -354,7 +365,7 @@ func runControllerChecks() {
         AppSettings.shared.language = .english
         expect(control.message.contains("Restore built-in display failed"), "Stored errors translate without retrying an operation")
         let failures: [DisplayFailure] = [
-            .apiUnavailable, .enumeration(1), .noBuiltin, .noExternal,
+            .apiUnavailable, .enumeration(1), .invalidDisplayState(1), .noBuiltin, .noExternal,
             .transaction(.begin, 1), .transaction(.restore, 1),
             .transaction(.disable, 1), .transaction(.commit, 1),
             .notRestored, .recoveryRecord, .callback(1), .disableUnavailable,
@@ -510,6 +521,17 @@ func runControllerChecks() {
         clock.addTimeInterval(2)
         control.refresh(readOnly: true)
         expect(!control.recoveryPending && !control.busy, "Observed active state after the settling deadline clears a failed rollback")
+    }
+    do {
+        var clock = Date()
+        let backend = SimulatedDisplay()
+        backend.rejectDisable = true
+        let control = DisplayController(driver: backend, now: { clock })
+        control.disable()
+        clock.addTimeInterval(2)
+        control.refresh()
+        expect(backend.calls == [false, true] && !control.recoveryPending, "A rejected disable finishes its automatic rollback")
+        expect(backend.disableGuard, "Automatic rollback is not an explicit acknowledgement to clear the guard")
     }
     do {
         var clock = Date()
@@ -719,6 +741,280 @@ func runControllerChecks() {
             control.refresh()
             expect(control.canDisable && backend.calls.isEmpty, "A later external connection still enables only manual disabling")
         }
+    }
+    do {
+        var clock = Date()
+        let backend = SimulatedDisplay()
+        let control = DisplayController(driver: backend, now: { clock })
+        control.disable()
+        backend.builtinActive = true
+        control.refresh()
+        clock.addTimeInterval(2)
+        control.refresh()
+        expect(!control.recoveryPending && backend.disableGuard, "Observed recovery must retain the separate manual-disable guard")
+        backend.builtinActive = false
+        control.refresh()
+        backend.externalCount = 0
+        control.refresh()
+        clock.addTimeInterval(4.99)
+        control.refresh()
+        expect(backend.calls == [false], "Guard recovery waits for the full awake settling interval")
+        clock.addTimeInterval(0.01)
+        control.refresh()
+        expect(backend.calls == [false, true] && control.recoveryPending, "A late inactive panel after record clearing still receives guarded unplug recovery")
+        control.refresh()
+        clock.addTimeInterval(2)
+        control.refresh()
+        expect(!control.recoveryPending && backend.disableGuard, "Automatic restoration does not erase the safety history")
+        control.restore()
+        expect(!backend.disableGuard, "Explicit restore of an already active panel acknowledges and clears the guard")
+    }
+    do {
+        var clock = Date()
+        let backend = SimulatedDisplay()
+        backend.disableGuard = true
+        backend.builtinActive = false
+        backend.builtinAsleep = true
+        backend.externalCount = 0
+        let control = DisplayController(driver: backend, now: { clock })
+        control.handleDisplaysSleep()
+        control.handleSleep()
+        clock.addTimeInterval(8 * 60 * 60)
+        control.refresh()
+        control.handleWake()
+        control.handleDisplaysWake()
+        clock.addTimeInterval(10)
+        control.refresh()
+        expect(backend.calls.isEmpty && !control.recoveryPending, "Guard history alone must not trigger recovery while the internal panel is asleep")
+        backend.builtinAsleep = false
+        control.refresh()
+        clock.addTimeInterval(4)
+        control.refreshOnReopen()
+        expect(backend.calls.isEmpty, "Dock reopen cannot bypass guarded wake settling")
+        clock.addTimeInterval(1)
+        control.refresh()
+        expect(backend.calls == [true], "Awake inactive internal display after wake receives guarded recovery")
+    }
+    do {
+        let backend = SimulatedDisplay()
+        backend.recoveryPending = true
+        backend.builtinActive = false
+        let control = DisplayController(driver: backend)
+        expect(backend.disableGuard, "Existing recovery records migrate to the persistent guard")
+        control.restore()
+        confirmRecovery(control)
+        expect(!backend.disableGuard && !control.recoveryPending, "Confirmed explicit restoration clears both records")
+    }
+    do {
+        func reading(_ id: CGDirectDisplayID, builtin: Int32 = 0, active: Int32 = 1,
+                     online: Int32 = 1, asleep: Int32 = 0,
+                     vendor: UInt32 = 0x4c2d, model: UInt32 = 0x7145) -> DisplayReading {
+            DisplayReading(id: id, builtin: builtin, active: active, online: online,
+                           asleep: asleep, vendor: vendor, model: model, width: 1920, height: 1080)
+        }
+        let internalOn = reading(1, builtin: 1, vendor: 0x610, model: 0xa050)
+        let physical = reading(2)
+        let virtual = reading(17, vendor: 0x756e6b6e, model: 0x76697274)
+        let invalidInternal = DisplayReading(
+            id: 1, builtin: -1, active: -1, online: -1, asleep: -1,
+            vendor: .max, model: .max, width: 0, height: 0
+        )
+        expect(invalidInternal.permitsConfiguration(enabled: true, listedOnline: false, historicalRecoveryTarget: true), "Recorded offline internal recovery reaches the enable API despite minus-one queries")
+        expect(!invalidInternal.permitsConfiguration(enabled: false, listedOnline: false, historicalRecoveryTarget: true), "Offline recovery exception never permits disabling")
+        expect(!invalidInternal.permitsConfiguration(enabled: true, listedOnline: false, historicalRecoveryTarget: false), "An invalid target without recorded recovery authorization is rejected")
+        expect(!invalidInternal.permitsConfiguration(enabled: true, listedOnline: true, historicalRecoveryTarget: true), "An invalid online target is not treated as the historical offline panel")
+        expect(!physical.permitsConfiguration(enabled: true, listedOnline: false, historicalRecoveryTarget: true), "A target positively identified as external is rejected even when offline")
+        expect(!virtual.permitsConfiguration(enabled: true, listedOnline: false, historicalRecoveryTarget: true), "A virtual target can never use the offline recovery exception")
+        expect(internalOn.permitsConfiguration(enabled: true, listedOnline: true, historicalRecoveryTarget: false), "Manual restoration of a valid internal panel needs no historical marker")
+        let unplugged = DisplaySnapshot(
+            onlineIDs: [17], activeIDs: [17], readings: [invalidInternal, virtual],
+            verifiedBuiltin: 1, rememberedBuiltin: 1, recoveryAuthorized: true
+        )
+        expect(unplugged.builtinID == 1, "An app-verified offline ID remains only a historical recovery target")
+        expect(!unplugged.builtinActive && !unplugged.builtinAsleep, "Minus-one queries cannot report a recovered or sleeping panel")
+        expect(unplugged.availableExternalIDs.isEmpty && unplugged.usableExternalIDs.isEmpty, "The fallback virtual display cannot prevent unplug recovery or authorize disabling")
+        expect(unplugged.ignoredVirtualIDs == [17], "Ignored virtual display identity remains visible in diagnostics")
+        let afterRestart = DisplaySnapshot(
+            onlineIDs: [17], activeIDs: [17], readings: [invalidInternal, virtual],
+            verifiedBuiltin: nil, rememberedBuiltin: 1, recoveryAuthorized: true
+        )
+        expect(afterRestart.builtinID == 1 && !afterRestart.builtinActive, "Persisted recovery intent retains an offline target without inventing success after restart")
+        do {
+            var clock = Date()
+            let backend = SimulatedDisplay()
+            backend.recoveryPending = true
+            backend.snapshotOverride = afterRestart
+            let control = DisplayController(driver: backend, now: { clock })
+            control.refresh()
+            expect(backend.calls == [true] && backend.savedRestoreCalls == 0, "A successful offline enable submission does not need the broader fallback")
+            clock.addTimeInterval(2)
+            control.refresh()
+            expect(control.recoveryPending && backend.calls == [true, true], "Success-shaped API returns with invalid panel readings retain intent and continue retries")
+            backend.snapshotOverride = DisplaySnapshot(
+                onlineIDs: [1, 17], activeIDs: [1, 17], readings: [internalOn, virtual],
+                verifiedBuiltin: 1, rememberedBuiltin: 1, recoveryAuthorized: true
+            )
+            control.refresh()
+            clock.addTimeInterval(2)
+            control.refresh()
+            expect(!control.recoveryPending && backend.disableGuard, "Offline enabling finishes only after genuine stable internal activity")
+        }
+        let unmarked = DisplaySnapshot(
+            onlineIDs: [17], activeIDs: [17], readings: [invalidInternal, virtual],
+            verifiedBuiltin: nil, rememberedBuiltin: 1, recoveryAuthorized: false
+        )
+        expect(unmarked.builtinID == nil, "An invalid remembered ID without recovery history is not identified as a built-in display")
+        let reused = DisplaySnapshot(
+            onlineIDs: [1, 17], activeIDs: [1, 17], readings: [reading(1), virtual],
+            verifiedBuiltin: 1, rememberedBuiltin: 1, recoveryAuthorized: true
+        )
+        expect(reused.builtinID == nil && !reused.builtinActive, "An online external reusing the historical internal ID never confirms restoration")
+        let activeLists: [[CGDirectDisplayID]] = [[], [2]]
+        for activeIDs in activeLists {
+            let stale = DisplaySnapshot(
+                onlineIDs: [1, 2], activeIDs: activeIDs, readings: [internalOn, physical],
+                verifiedBuiltin: 1, rememberedBuiltin: 1, recoveryAuthorized: true
+            )
+            expect(!stale.builtinActive, "A true per-display flag without active-list membership is not recovery proof")
+        }
+        for invalid in [
+            reading(1, builtin: -1), reading(1, builtin: 1, active: -1),
+            reading(1, builtin: 1, online: -1), reading(1, builtin: 1, asleep: -1)
+        ] {
+            let state = DisplaySnapshot(
+                onlineIDs: [1], activeIDs: [1], readings: [invalid],
+                verifiedBuiltin: 1, rememberedBuiltin: 1, recoveryAuthorized: true
+            )
+            expect(!state.builtinActive, "Any invalid raw boolean prevents a positive recovery confirmation")
+        }
+        for invalid in [
+            reading(2, active: -1), reading(2, online: -1),
+            reading(2, asleep: -1), reading(2, vendor: .max)
+        ] {
+            let state = DisplaySnapshot(
+                onlineIDs: [1, 2], activeIDs: [1, 2], readings: [internalOn, invalid],
+                verifiedBuiltin: nil, rememberedBuiltin: nil, recoveryAuthorized: false
+            )
+            expect(state.availableExternalIDs.isEmpty && state.usableExternalIDs.isEmpty, "Invalid external queries never authorize disabling or suppress unplug recovery")
+        }
+        let restored = DisplaySnapshot(
+            onlineIDs: [1, 17], activeIDs: [1, 17], readings: [internalOn, virtual],
+            verifiedBuiltin: 1, rememberedBuiltin: 1, recoveryAuthorized: true
+        )
+        let connected = DisplaySnapshot(
+            onlineIDs: [1, 2, 17], activeIDs: [1, 2, 17], readings: [internalOn, physical, virtual],
+            verifiedBuiltin: nil, rememberedBuiltin: nil, recoveryAuthorized: false
+        )
+        expect(connected.builtinActive && connected.availableExternalIDs == [2] && connected.usableExternalIDs == [2], "A valid physical monitor still authorizes disabling alongside a virtual display")
+        let asleep = DisplaySnapshot(
+            onlineIDs: [2, 17], activeIDs: [17], readings: [reading(2, active: 0, asleep: 1), virtual],
+            verifiedBuiltin: 1, rememberedBuiltin: 1, recoveryAuthorized: true
+        )
+        expect(asleep.availableExternalIDs == [2] && asleep.usableExternalIDs.isEmpty && asleep.externalDisplaysAsleep, "A physical sleeping monitor remains connected but cannot authorize disabling")
+
+        var clock = Date()
+        let backend = SimulatedDisplay()
+        backend.recoveryPending = true
+        backend.rejectRestore = true
+        backend.snapshotOverride = unplugged
+        let control = DisplayController(driver: backend, now: { clock })
+        control.refresh()
+        expect(backend.calls == [true] && backend.savedRestoreCalls == 1, "Unplug with only the virtual fallback starts restoration and the no-physical-display fallback")
+        clock.addTimeInterval(2)
+        control.refresh()
+        expect(control.recoveryPending && backend.disableGuard && backend.calls.count == 2, "Repeated minus-one readings cannot clear recovery intent or stop retries")
+        backend.snapshotOverride = restored
+        control.refresh(readOnly: true)
+        clock.addTimeInterval(2)
+        control.refresh(readOnly: true)
+        expect(!control.recoveryPending && backend.disableGuard, "Only genuine active internal enumeration completes recovery and retains the guard")
+        expect(!control.canDisable, "An active internal panel plus only a virtual fallback cannot enable the disable button")
+        backend.snapshotOverride = connected
+        control.refresh(readOnly: true)
+        expect(control.canDisable, "Reconnecting a real monitor enables manual disabling without issuing a new disable")
+
+        let guardedBackend = SimulatedDisplay()
+        guardedBackend.disableGuard = true
+        guardedBackend.rejectRestore = true
+        guardedBackend.snapshotOverride = afterRestart
+        let guarded = DisplayController(driver: guardedBackend, now: { clock })
+        guarded.refresh()
+        clock.addTimeInterval(4.99)
+        guarded.refresh()
+        expect(guardedBackend.calls.isEmpty, "Invalid historical queries with virtual-only output still honor the guard settling delay")
+        clock.addTimeInterval(0.01)
+        guarded.refresh()
+        expect(guardedBackend.calls == [true] && guardedBackend.savedRestoreCalls == 1, "A retained guard can recover when the offline target's queries are invalid and only a virtual display remains")
+    }
+    do {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ScreenSwitch.logChecks.\(UUID().uuidString)")
+        do {
+            let log = DiagnosticLog(directory: directory, maximumBytes: 240)
+            for index in 0..<20 { log.write("rotation-check-\(index) " + String(repeating: "x", count: 40)) }
+            let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            expect(Set(names) == Set([".lock", "ScreenSwitch.log", "ScreenSwitch.1.log", "ScreenSwitch.2.log"]), "Rolling logs keep only the current file and two archives")
+            let current = directory.appendingPathComponent("ScreenSwitch.log")
+            let text = try String(contentsOf: current, encoding: .utf8)
+            expect(text.contains("rotation-check-19") && text.contains("pid="), "Last event is immediately readable with process identity")
+            let permissions = try FileManager.default.attributesOfItem(atPath: current.path)[.posixPermissions] as? NSNumber
+            expect(permissions?.intValue == 0o600, "Diagnostic log is readable only by the current user")
+            let contents = try String(contentsOf: DiagnosticLog.checkDirectory!.appendingPathComponent("ScreenSwitch.log"), encoding: .utf8)
+            expect(contents.contains("guard_recovery") && contents.contains("recovery_confirmed"), "Real controller events are written to independent disk logs")
+            try FileManager.default.removeItem(at: directory)
+            let first = DiagnosticLog(directory: directory, maximumBytes: 100_000)
+            let second = DiagnosticLog(directory: directory, maximumBytes: 100_000)
+            DispatchQueue.concurrentPerform(iterations: 32) { index in
+                (index.isMultiple(of: 2) ? first : second).write("concurrent-\(index)")
+            }
+            let concurrent = try String(contentsOf: directory.appendingPathComponent("ScreenSwitch.log"), encoding: .utf8)
+            let lines = concurrent.split(separator: "\n")
+            expect(lines.count == 32, "Independent log writers do not lose entries during concurrent append")
+            expect(Set(lines.compactMap { $0.components(separatedBy: " ").last }).count == 32, "Concurrent entries remain complete and distinct")
+            try FileManager.default.removeItem(at: directory)
+        } catch {
+            fputs("FAIL: log checks: \(error)\n", stderr)
+            exit(1)
+        }
+    }
+    for serviceClass in ["IOMobileFramebufferShim", "AppleDCPDPTXProxy", "AppleCLCD2", "AppleBacklightDisplay", "IOPMrootDomain"] {
+        expect(DisplayHardwareDiagnostics.isRelevantClass(serviceClass), "Display and lid-state services are included in hardware diagnostics")
+    }
+    for serviceClass in ["IOUSBHostDevice", "IOPlatformExpertDevice", "IOHIDDevice", "AppleHDCPInterface", "IOMobileFramebufferUserClient", "DCPEndpointV2", "DCPAVAudioDMADelegate"] {
+        expect(!DisplayHardwareDiagnostics.isRelevantClass(serviceClass), "Unrelated registry devices are not collected")
+    }
+    expect(DisplayHardwareDiagnostics.scalar(NSNumber(value: true)) == "1", "Hardware boolean state is retained")
+    expect(DisplayHardwareDiagnostics.scalar(Data([0, 1])) == "0x0001", "Short hardware flags retain raw byte values")
+    expect(DisplayHardwareDiagnostics.scalar("private identifier") == nil, "Hardware diagnostics reject arbitrary strings")
+    expect(DisplayHardwareDiagnostics.scalar(Data(repeating: 1, count: 128)) == nil, "Large binary blobs such as EDID are not logged")
+    expect(DisplayHardwareDiagnostics.scalar(["serial": "private identifier"]) == nil, "Unfiltered property dictionaries are not logged")
+    do {
+        let started = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+        let outputLock = NSLock()
+        var output: [String] = []
+        let sampler = DisplayHardwareDiagnostics(capture: {
+            started.signal()
+            guard release.wait(timeout: .now() + 5) == .success else {
+                return ["ERROR test_capture_timed_out"]
+            }
+            return ["test_registry_state"]
+        }, write: { line in
+            outputLock.lock()
+            output.append(line)
+            outputLock.unlock()
+            if line.hasPrefix("hardware_snapshot end") { finished.signal() }
+        })
+        expect(sampler.request(reason: "test_invalid_query", context: "online=[17]"), "The first hardware capture is admitted")
+        expect(started.wait(timeout: .now() + 2) == .success, "Registry capture starts on a background queue")
+        expect(!sampler.request(reason: "another_event", context: ""), "A busy capture cannot accumulate queued work")
+        release.signal()
+        expect(finished.wait(timeout: .now() + 2) == .success, "Hardware capture completes without blocking the caller")
+        expect(!sampler.request(reason: "retry_too_soon", context: ""), "Repeated diagnostics are rate limited")
+        outputLock.lock()
+        let captured = output.joined(separator: "\n")
+        outputLock.unlock()
+        expect(captured.contains("reason=test_invalid_query context=online=[17]") && captured.contains("test_registry_state") && captured.contains("duration="), "Capture reason, CoreGraphics context, registry state and timing remain correlated")
     }
     print("PASS: \(count) controller lifecycle checks with simulated displays; no real driver instantiated.")
 }

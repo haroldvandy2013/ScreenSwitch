@@ -2,14 +2,14 @@ import AppKit
 import Darwin
 
 let arguments = Set(CommandLine.arguments.dropFirst())
-var allowed: Set<String> = ["--diagnose", "--restore", "--version"]
+var allowed: Set<String> = ["--diagnose", "--diagnose-hardware", "--restore", "--version"]
 #if DEBUG
 allowed.insert("--check-controller")
 allowed.insert("--check-ui")
 #endif
 if !arguments.isSubset(of: allowed) || arguments.count > 1 {
-    fputs(L("用法：ScreenSwitch [--diagnose | --restore | --version]\n没有命令行关屏选项；请在窗口或菜单栏手动操作。\n",
-            "Usage: ScreenSwitch [--diagnose | --restore | --version]\nNo command-line disable option. Use the window or menu bar manually.\n"), stderr)
+    fputs(L("用法：ScreenSwitch [--diagnose | --diagnose-hardware | --restore | --version]\n没有命令行关屏选项；请在窗口或菜单栏手动操作。\n",
+            "Usage: ScreenSwitch [--diagnose | --diagnose-hardware | --restore | --version]\nNo command-line disable option. Use the window or menu bar manually.\n"), stderr)
     exit(2)
 }
 
@@ -22,10 +22,15 @@ if arguments.contains("--version") {
 let checkSuite = "local.ScreenSwitch.checks.runtime.\(UUID().uuidString)"
 if arguments.contains("--check-controller") || arguments.contains("--check-ui") {
     AppSettings.checkDefaults = UserDefaults(suiteName: checkSuite)!
+    DiagnosticLog.checkDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(checkSuite)
 }
 if arguments.contains("--check-controller") {
     MainActor.assumeIsolated { runControllerChecks() }
     AppSettings.checkDefaults?.removePersistentDomain(forName: checkSuite)
+    if let directory = DiagnosticLog.checkDirectory {
+        do { try FileManager.default.removeItem(at: directory) }
+        catch { fputs("Cannot remove check logs: \(error)\n", stderr); exit(1) }
+    }
     exit(0)
 }
 if arguments.contains("--check-ui") {
@@ -38,13 +43,23 @@ if arguments.contains("--check-ui") {
         delegate.checkControlWindow()
     }
     AppSettings.checkDefaults?.removePersistentDomain(forName: checkSuite)
+    if let directory = DiagnosticLog.checkDirectory {
+        do { try FileManager.default.removeItem(at: directory) }
+        catch { fputs("Cannot remove check logs: \(error)\n", stderr); exit(1) }
+    }
     exit(0)
 }
 #endif
 
+if arguments.contains("--diagnose-hardware") {
+    let lines = DisplayHardwareDiagnostics.capture()
+    print(lines.joined(separator: "\n"))
+    exit(lines.contains { $0.hasPrefix("ERROR") } ? 1 : 0)
+}
+
 if arguments.contains("--diagnose") {
     do {
-        print(try DisplayDriver().diagnosticText())
+        print(try DisplayDriver(hardwareDiagnosticsEnabled: false).diagnosticText())
         exit(0)
     } catch {
         fputs("\(error.localizedDescription)\n", stderr)

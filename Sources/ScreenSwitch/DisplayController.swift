@@ -46,6 +46,9 @@ final class DisplayController {
     private var activeSince: Date?
     private var activeTopology: String?
     private var lastStateLog: String?
+    private var guardRecoverySince: Date?
+    private var clearGuardWhenRecovered = false
+    private var lastHeartbeat = Date.distantPast
     private var removedDisplays: Set<CGDirectDisplayID> = []
     private var lastError: Error?
     private var lastLoggedMessage: String?
@@ -60,6 +63,11 @@ final class DisplayController {
         self.settings = settings
         self.now = now
         recoveryWanted = driver.recoveryPending
+        if driver.recoveryPending && !driver.disableGuard {
+            if !driver.setDisableGuard(true) {
+                DiagnosticLog.shared.write("ERROR could not migrate pending recovery into disable guard")
+            }
+        }
     }
 
     var apiAvailable: Bool { driver.apiAvailable }
@@ -80,9 +88,11 @@ final class DisplayController {
     }
 
     func start() {
+        DiagnosticLog.shared.write("start \(AppVersion.label()) build=\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "dev") macOS=\(ProcessInfo.processInfo.operatingSystemVersionString) record=\(driver.recoveryPending) guard=\(driver.disableGuard)")
         logger.notice("Starting \(AppVersion.label(), privacy: .public); macOS \(ProcessInfo.processInfo.operatingSystemVersionString, privacy: .public); recoveryRecord=\(self.driver.recoveryPending)")
         let result = CGDisplayRegisterReconfigurationCallback(displayCallback, nil)
         callbackRegistered = result == .success
+        DiagnosticLog.shared.write("callback_registration result=\(result.rawValue)")
         if !callbackRegistered {
             report(DisplayFailure.callback(result.rawValue))
         }
@@ -96,7 +106,10 @@ final class DisplayController {
         })
         for name in [NSApplication.didChangeScreenParametersNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.refresh() }
+                MainActor.assumeIsolated {
+                    DiagnosticLog.shared.write("event AppKit screen parameters changed")
+                    self?.refresh()
+                }
             })
         }
         let workspace = NSWorkspace.shared.notificationCenter
@@ -134,6 +147,7 @@ final class DisplayController {
     }
 
     func stop() {
+        DiagnosticLog.shared.write("stop")
         timer?.invalidate()
         if callbackRegistered { CGDisplayRemoveReconfigurationCallback(displayCallback, nil) }
         observers.forEach(NotificationCenter.default.removeObserver)
@@ -141,6 +155,8 @@ final class DisplayController {
     }
 
     func handleSleep() {
+        DiagnosticLog.shared.write("event system_sleep pending=\(recoveryPending)")
+        guardRecoverySince = nil
         logger.notice("Event: system sleep; recoveryPending=\(self.recoveryPending)")
         resetActiveConfirmation()
         sleeping = true
@@ -149,6 +165,8 @@ final class DisplayController {
     }
 
     func handleWake() {
+        DiagnosticLog.shared.write("event system_wake pending=\(recoveryPending)")
+        guardRecoverySince = nil
         logger.notice("Event: system wake; recoveryPending=\(self.recoveryPending)")
         resetActiveConfirmation()
         sleeping = false
@@ -159,6 +177,8 @@ final class DisplayController {
     }
 
     func handleDisplaysSleep() {
+        DiagnosticLog.shared.write("event displays_sleep pending=\(recoveryPending) optIn=\(settings.restoreOnDisplaySleep)")
+        guardRecoverySince = nil
         logger.notice("Event: displays sleep; recoveryPending=\(self.recoveryPending); optIn=\(self.settings.restoreOnDisplaySleep)")
         resetActiveConfirmation()
         displaysSleeping = true
@@ -166,6 +186,8 @@ final class DisplayController {
     }
 
     func handleDisplaysWake() {
+        DiagnosticLog.shared.write("event displays_wake pending=\(recoveryPending)")
+        guardRecoverySince = nil
         logger.notice("Event: displays wake; recoveryPending=\(self.recoveryPending)")
         resetActiveConfirmation()
         displaysSleeping = false
@@ -174,11 +196,13 @@ final class DisplayController {
     }
 
     func refreshOnReopen() {
+        DiagnosticLog.shared.write("event reopen read_only pending=\(recoveryPending)")
         logger.notice("Event: reopen (read-only); recoveryPending=\(self.recoveryPending)")
         refresh(readOnly: true)
     }
 
     func handleDisplayChange(_ display: CGDirectDisplayID, flags: CGDisplayChangeSummaryFlags) {
+        DiagnosticLog.shared.write("event display_callback id=\(display) flags=\(flags.rawValue) pending=\(recoveryPending)")
         logger.notice("Display callback: id=\(display), flags=\(flags.rawValue), recoveryPending=\(self.recoveryPending)")
         resetActiveConfirmation()
         if flags.contains(.removeFlag) {
@@ -191,6 +215,7 @@ final class DisplayController {
     }
 
     func disable() {
+        DiagnosticLog.shared.write("manual_disable requested")
         logger.notice("Manual disable requested")
         refresh()
         guard canDisable else {
@@ -202,6 +227,7 @@ final class DisplayController {
             disableSettlingUntil = now().addingTimeInterval(3)
             disableRollbackNeeded = true
             disableIntent = true
+            clearGuardWhenRecovered = false
             restoreAttempts = 0
             nextRestoreAttempt = .distantPast
             resetActiveConfirmation()
@@ -213,15 +239,23 @@ final class DisplayController {
             recoveryWanted = recoveryPending
             report(error)
             onError?(error)
-            if recoveryWanted { restore() }
+            if recoveryWanted { restore(restartRetries: false) }
             refresh()
         }
     }
 
     func restore(restartRetries: Bool = true) {
+        DiagnosticLog.shared.write("restore requested restart=\(restartRetries) pending=\(recoveryPending)")
         logger.notice("Restore requested; recoveryPending=\(self.recoveryPending), restartRetries=\(restartRetries)")
         refresh(readOnly: true)
         if snapshot?.builtinID != nil, snapshot?.builtinActive == true, canConfirmActive {
+            if restartRetries {
+                if recoveryPending {
+                    clearGuardWhenRecovered = true
+                } else if !driver.setDisableGuard(false) {
+                    report(DisplayFailure.recoveryRecord)
+                }
+            }
             return
         }
         if !restartRetries && recoveryWanted {
@@ -229,6 +263,7 @@ final class DisplayController {
             return
         }
         recoveryWanted = true
+        if restartRetries { clearGuardWhenRecovered = true }
         restoreCommandSucceeded = false
         savedRestoreRequested = false
         restoreFailureAlerted = false
@@ -243,6 +278,7 @@ final class DisplayController {
     private func attemptRestore() {
         guard restoreAttempts <= Self.retryIntervals.count, now() >= nextRestoreAttempt else { return }
         restoreAttempts += 1
+        DiagnosticLog.shared.write("recovery_attempt \(restoreAttempts)/\(Self.retryIntervals.count + 1)")
         logger.notice("Recovery attempt \(self.restoreAttempts)/\(Self.retryIntervals.count + 1)")
         defer {
             disableRollbackNeeded = false
@@ -251,6 +287,7 @@ final class DisplayController {
                 let delay = Self.retryIntervals[restoreAttempts - 1]
                 nextRestoreAttempt = now().addingTimeInterval(delay)
                 logger.notice("Next recovery retry in \(delay) seconds")
+                DiagnosticLog.shared.write("retry_scheduled delay=\(delay)s")
             } else {
                 nextRestoreAttempt = .distantFuture
                 logger.notice("All five retries submitted; awaiting final recovery confirmation")
@@ -281,8 +318,13 @@ final class DisplayController {
     }
 
     private func finishRecovery() {
+        DiagnosticLog.shared.write("recovery_confirmed stable>=2s clear_guard=\(clearGuardWhenRecovered) topology=\(activeTopology ?? "unknown")")
         logger.notice("Internal display remained active for at least 2 seconds; clearing recovery intent and record")
         driver.markRecovered()
+        if clearGuardWhenRecovered && !driver.setDisableGuard(false) {
+            report(DisplayFailure.recoveryRecord)
+        }
+        clearGuardWhenRecovered = false
         disableIntent = false
         recoveryWanted = false
         operation = nil
@@ -311,17 +353,41 @@ final class DisplayController {
                 onlineIDs: observed.onlineIDs,
                 builtinID: observed.builtinID,
                 builtinActive: observed.builtinActive,
+                builtinAsleep: observed.builtinAsleep,
                 availableExternalIDs: observed.availableExternalIDs.filter { !removedDisplays.contains($0) },
                 usableExternalIDs: observed.usableExternalIDs.filter { !removedDisplays.contains($0) },
-                externalDisplaysAsleep: observed.externalDisplaysAsleep
+                externalDisplaysAsleep: observed.externalDisplaysAsleep,
+                ignoredVirtualIDs: observed.ignoredVirtualIDs
             )
             removedDisplays.formIntersection(Set(observed.onlineIDs))
             snapshot = current
             let topology = "builtin=\(current.builtinID.map(String.init) ?? "unknown"), online=\(current.onlineIDs.sorted()), external=\(current.availableExternalIDs.sorted()), usable=\(current.usableExternalIDs.sorted())"
-            let state = "\(topology), active=\(current.builtinActive), record=\(driver.recoveryPending), intent=\(disableIntent), wanted=\(recoveryWanted), attempts=\(restoreAttempts), busy=\(busy), sleeping=\(sleeping), displaysSleeping=\(displaysSleeping), removed=\(removedDisplays.sorted())"
+            let state = "\(topology), ignoredVirtual=\(current.ignoredVirtualIDs), active=\(current.builtinActive), builtinAsleep=\(current.builtinAsleep), record=\(driver.recoveryPending), guard=\(driver.disableGuard), intent=\(disableIntent), wanted=\(recoveryWanted), attempts=\(restoreAttempts), busy=\(busy), sleeping=\(sleeping), displaysSleeping=\(displaysSleeping), removed=\(removedDisplays.sorted())"
             if state != lastStateLog {
                 logger.notice("Display state: \(state, privacy: .public)")
+                DiagnosticLog.shared.write("state \(state)")
                 lastStateLog = state
+            }
+            if now().timeIntervalSince(lastHeartbeat) >= 60 {
+                DiagnosticLog.shared.write("heartbeat \(state)")
+                lastHeartbeat = now()
+            }
+            if !recoveryPending, driver.disableGuard, current.builtinID != nil,
+               !current.builtinActive, !current.builtinAsleep,
+               current.availableExternalIDs.isEmpty, !sleeping, !displaysSleeping {
+                if let guardRecoverySince, now().timeIntervalSince(guardRecoverySince) >= 5, !readOnly {
+                    DiagnosticLog.shared.write("guard_recovery: internal inactive while awake with no external for >=5s")
+                    recoveryWanted = true
+                    restoreAttempts = 0
+                    nextRestoreAttempt = .distantPast
+                    restoreFailureAlerted = false
+                    if !driver.markRecoveryPending() { report(DisplayFailure.recoveryRecord) }
+                } else if guardRecoverySince == nil {
+                    guardRecoverySince = now()
+                    DiagnosticLog.shared.write("guard_recovery candidate: waiting 5s for wake/display state to settle")
+                }
+            } else {
+                guardRecoverySince = nil
             }
             if current.builtinID != nil, current.builtinActive, recoveryPending, canConfirmActive {
                 if activeTopology != topology {
@@ -349,6 +415,7 @@ final class DisplayController {
             )
             if !readOnly && policy.mustRestore && !recoveryWanted {
                 logger.notice("Automatic recovery: noExternal=\(current.availableExternalIDs.isEmpty), systemSleep=\(self.sleeping), displaySleep=\(self.displaysSleeping || current.externalDisplaysAsleep), sleepOptIn=\(self.settings.restoreOnDisplaySleep)")
+                DiagnosticLog.shared.write("automatic_recovery noExternal=\(current.availableExternalIDs.isEmpty) sleeping=\(sleeping) displaysSleeping=\(displaysSleeping) optIn=\(settings.restoreOnDisplaySleep)")
                 recoveryWanted = true
                 restoreCommandSucceeded = false
                 savedRestoreRequested = false
@@ -377,6 +444,7 @@ final class DisplayController {
                 }
             }
         } catch {
+            guardRecoverySince = nil
             resetActiveConfirmation()
             snapshot = nil
             report(error)
@@ -396,6 +464,7 @@ final class DisplayController {
             restoreFailureAlerted = true
             operation = nil
             logger.error("Recovery retries exhausted; keeping recovery record, manual retry remains available")
+            DiagnosticLog.shared.write("recovery_exhausted keeping_record=true")
             report(DisplayFailure.notRestored)
             onError?(DisplayFailure.notRestored)
         }
@@ -438,6 +507,7 @@ final class DisplayController {
         let text = error.localizedDescription
         guard text != lastLoggedMessage else { return }
         lastLoggedMessage = text
+        DiagnosticLog.shared.write("ERROR \(text)")
         logger.error("\(text, privacy: .public)")
     }
 }
