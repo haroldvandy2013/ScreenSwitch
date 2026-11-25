@@ -186,10 +186,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             checkbox.setAccessibilityIdentifier("restoreOnDisplaySleep")
             localizedWindowText.append {
                 checkbox.title = L("熄屏时自动恢复内置屏幕", "Restore built-in display on screen sleep")
-                checkbox.toolTip = L(
-                    "默认关闭。勾选后，显示器熄屏时尝试恢复内屏输出；不发送唤醒电脑的命令，唤醒后不再自动关闭内屏。",
-                    "Off by default. When checked, display sleep triggers a restoration attempt. No computer-wake command is sent; waking never turns the panel off again."
-                )
             }
             displaySleepCheckbox = checkbox
             let version = NSTextField(labelWithString: AppVersion.label())
@@ -197,6 +193,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             version.font = .systemFont(ofSize: 12)
             version.setAccessibilityIdentifier("appVersion")
             windowVersion = version
+            for label in [title, status, detail, languageLabel, version] {
+                label.allowsExpansionToolTips = false
+            }
             let header = NSView()
             header.translatesAutoresizingMaskIntoConstraints = false
             title.translatesAutoresizingMaskIntoConstraints = false
@@ -273,7 +272,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             systemSymbolName: controller.recoveryPending ? "display" : "laptopcomputer",
             accessibilityDescription: controller.message
         )
-        statusItem.button?.toolTip = controller.message
+        statusItem.button?.toolTip = nil
         if let window = controlWindow, let stack = windowContentStack {
             window.contentView?.layoutSubtreeIfNeeded()
             let height = ceil(stack.fittingSize.height + 40)
@@ -420,6 +419,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         precondition(windowToggle?.title == "关闭内置屏幕", "Initial UI must be Chinese")
         precondition(windowVersion?.stringValue == AppVersion.label(), "Window must show the current bundle version")
         precondition(windowVersion?.stringValue.hasPrefix("version ") == true, "Version label must use the compact format")
+        precondition(statusItem.button?.toolTip == nil, "Menu-bar status must not create floating error tooltips")
+        precondition(displaySleepCheckbox?.toolTip == nil, "Display-sleep help stays in the help dialog, not a floating tooltip")
+        func checkNoExpansionTips(_ view: NSView) {
+            if let label = view as? NSTextField {
+                precondition(!label.allowsExpansionToolTips, "Window labels must not create floating expansion tips")
+            }
+            for child in view.subviews where !(child is NSButton) {
+                checkNoExpansionTips(child)
+            }
+        }
+        if let content = controlWindow?.contentView { checkNoExpansionTips(content) }
         precondition(displaySleepCheckbox?.state == .off, "Optional restoration must start unchecked")
         precondition(displaySleepMenuItem?.state == .off, "Menu must reflect unchecked preference")
         displaySleepCheckbox?.performClick(nil)
@@ -441,6 +451,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         precondition(toggleItem.title == windowToggle?.title, "Menu and window must use the same language")
         precondition(displaySleepCheckbox?.title == "Restore built-in display on screen sleep", "Option must translate")
         precondition(displaySleepMenuItem?.title == displaySleepCheckbox?.title, "Both option entries must translate")
+        precondition(statusItem.button?.toolTip == nil && displaySleepCheckbox?.toolTip == nil, "Language and status updates must not reintroduce tooltips")
         controlWindow?.contentView?.layoutSubtreeIfNeeded()
         if let content = controlWindow?.contentView {
             func checkLayout(_ view: NSView) {

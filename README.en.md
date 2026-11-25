@@ -14,7 +14,7 @@ A simple switch attempts to disable the built-in display's desktop output—not 
 
 ## Download and install
 
-Download **ScreenSwitch-v0.2.2-macos-arm64.zip** from [Releases](https://github.com/haroldvandy2013/ScreenSwitch/releases/latest). Extract it and copy **ScreenSwitch.app** to your Applications folder. Disabling and recovery are integrated into this single app; no separate restore app is needed.
+Download **ScreenSwitch-v0.2.9-macos-arm64.zip** from [Releases](https://github.com/haroldvandy2013/ScreenSwitch/releases/latest). Extract it and copy **ScreenSwitch.app** to your Applications folder. Disabling and recovery are integrated into this single app; no separate restore app is needed.
 
 Before updating, confirm that the built-in display is active, then quit the old version and replace it. Do not force-quit a stuck old version while the built-in display is off.
 
@@ -34,7 +34,9 @@ Use **语言 / Language** in the window or menu to select “简体中文” or 
 
 The version appears in the top-right corner. **Refresh** only rechecks display state, without disabling or restoring a display. The single action reads “Turn off built-in display” while the panel is on, and “Restore built-in display” while it is off. An already active panel does not receive redundant restore transactions.
 
-The source fix is **v0.2.8** (the download remains v0.2.2). The current recovery record and a persistent manual-disable guard are separate. Two seconds of stable internal activity finishes a recovery, but automatic recovery does not erase the guard history. If the panel later stays inactive for five seconds while awake, not in display sleep, and without an external monitor, guarded recovery starts again. Normal sleep does not trigger restoration solely from inactivity. Confirmed explicit user restoration clears the guard. Records already lost by an older version cannot be reconstructed.
+Menu-bar and option tooltips, and automatic expansion tips on window labels, are disabled to prevent lingering floating text after display changes. Status and errors remain in the window and menu; option details remain in Usage and safety.
+
+The current version is **v0.2.9**. The current recovery record and a persistent manual-disable guard are separate. Two seconds of stable internal activity finishes a recovery, but automatic recovery does not erase the guard history. If the panel later stays inactive for five seconds while awake, not in display sleep, and without an external monitor, guarded recovery starts again. Normal sleep does not trigger restoration solely from inactivity. Confirmed explicit user restoration clears the guard. Records already lost by an older version cannot be reconstructed.
 
 Recovery confirmation cross-checks the online list, active list and valid per-display state. Invalid values such as `-1` never count as an active panel or clear recovery intent. v0.2.8 permits enabling a previously verified historical internal ID with a recovery record or guard, even when unplug makes its queries invalid. This exception is offline-only and never permits disabling or targeting a recognized external/virtual display. A successful API return still requires stable internal activity before recovery is confirmed. Failed enabling with no available external monitor retains the saved-configuration fallback. The recognized macOS fallback virtual display (`unkn/virt` device identity) neither authorizes disabling nor prevents unplug recovery. Other virtual-display implementations are not guaranteed to be recognized; keep a physical monitor available.
 
